@@ -171,9 +171,9 @@ class KarukanInputController: IMKInputController {
                 hasPreedit = false
                 client.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
 
-            case .updatePreedit(let text, let caret, let attributes):
+            case .updatePreedit(let text, let caret, _):
                 hasPreedit = !text.isEmpty
-                setMarkedText(text: text, caret: caret, attributes: attributes, client: client)
+                setMarkedText(text: text, caret: caret, client: client)
 
             case .showCandidates(let candidates, let cursor, let page, let totalPages, let divider):
                 // Query the composition anchor (a synchronous IPC into the
@@ -247,9 +247,7 @@ class KarukanInputController: IMKInputController {
         )
     }
 
-    private func setMarkedText(
-        text: String, caret: Int, attributes: [PreeditAttr], client: any IMKTextInput
-    ) {
+    private func setMarkedText(text: String, caret: Int, client: any IMKTextInput) {
         guard !text.isEmpty else {
             client.setMarkedText(
                 NSAttributedString(string: ""),
@@ -259,24 +257,18 @@ class KarukanInputController: IMKInputController {
             return
         }
 
-        let attributed = NSMutableAttributedString(
+        // One thin underline for the whole preedit, the engine's highlighted
+        // segment included. A thick underline is the usual mark for it, but
+        // Chromium turns a thick-underlined range into the DOM selection
+        // (measured: 0..3 instead of the caret at 3), and a page that tests
+        // "caret at the start of the input" then acts on a key the IME
+        // consumed: the Claude Code chat box in VS Code recalled its history
+        // on ↑ mid-conversion and replaced the composition. The candidate
+        // window already shows that a conversion is open.
+        let attributed = NSAttributedString(
             string: text,
             attributes: [.underlineStyle: NSUnderlineStyle.single.rawValue]
         )
-        for attr in attributes {
-            guard let range = utf16Range(of: attr.start..<attr.end, in: text) else { continue }
-            let style: NSUnderlineStyle
-            switch attr.style {
-            // The focused/highlighted segment is drawn with a thick
-            // underline (the convention azooKey/mac-akaza use for marked
-            // text, since background colors are unreliable across apps).
-            case "underline_double", "highlight", "reverse":
-                style = .thick
-            default:
-                style = .single
-            }
-            attributed.addAttribute(.underlineStyle, value: style.rawValue, range: range)
-        }
 
         let caretUTF16 = utf16Offset(ofScalarOffset: caret, in: text)
         client.setMarkedText(
