@@ -1,70 +1,22 @@
-//! Tests for the learning cache and the Tab-skips-learning behavior.
-//!
-//! Space/Down: include learning candidates (default conversion).
-//! Tab: skip learning candidates (lets users escape stale learned entries).
-//! Ctrl+Delete: delete the selected learning candidate from the history.
+//! Tests for the learning cache: candidates it surfaces and
+//! Ctrl+Delete, which deletes the selected learning candidate from the history.
 
 use super::*;
 use crate::core::engine::display::LEARNING_DELETE_HINT;
 
 #[test]
-fn build_candidates_includes_learning_when_not_skipped() {
+fn build_candidates_include_learning() {
     let mut engine = engine_with_learned("あい", "藍");
 
     let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", "あい", "", 9, LearningLookup::Use)
+        .build_conversion_candidates("あい", "あい", "", 9)
         .into_iter()
         .map(|c| c.text)
         .collect();
 
     assert!(
         texts.contains(&"藍".to_string()),
-        "Space path (skip_learning=false) should surface learned `藍`, got {:?}",
-        texts,
-    );
-}
-
-#[test]
-fn build_candidates_omits_learning_when_skipped() {
-    let mut engine = engine_with_learned("あい", "藍");
-
-    let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", "あい", "", 9, LearningLookup::Skip)
-        .into_iter()
-        .map(|c| c.text)
-        .collect();
-
-    assert!(
-        !texts.contains(&"藍".to_string()),
-        "Tab path (skip_learning=true) must drop learned `藍`, got {:?}",
-        texts,
-    );
-}
-
-#[test]
-fn tab_key_skips_learning_in_composing() {
-    // End-to-end: type the reading, press Tab → learned candidate is gone.
-    let mut engine = engine_with_learned("あい", "藍");
-
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
-    assert_eq!(engine.input_buf.reading(), "あい");
-
-    let result = engine.process_key(&press_key(Keysym::TAB));
-    assert!(result.consumed);
-    assert!(matches!(engine.state(), InputState::Conversion { .. }));
-
-    let texts: Vec<String> = engine
-        .state()
-        .candidates()
-        .unwrap()
-        .candidates()
-        .iter()
-        .map(|c| c.text.clone())
-        .collect();
-    assert!(
-        !texts.contains(&"藍".to_string()),
-        "Tab must skip the learned `藍` candidate, got {:?}",
+        "conversion should surface learned `藍`, got {:?}",
         texts,
     );
 }
@@ -78,8 +30,8 @@ fn ctrl_delete_removes_selected_learning_entry() {
     engine.process_key(&press_key(Keysym::SPACE));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
-    // Learning candidates are force-pushed first, so the learned entry is
-    // the initial selection.
+    // The kana row leads, then the learning candidates (force-pushed ahead
+    // of everything else); the initial selection is the first answer.
     let selected = engine
         .state()
         .candidates()
@@ -127,8 +79,9 @@ fn ctrl_delete_removes_selected_learning_entry() {
             .any(|c| c.text == "藍" && c.is_deletable()),
         "`藍` must no longer be a learning candidate after deletion",
     );
-    // The rebuilt list reopens at the top.
-    assert_eq!(candidates.cursor(), 0);
+    // The rebuilt list keeps the selection where it was: index 1, past the
+    // kana row that leads the list.
+    assert_eq!(candidates.cursor(), 1);
 }
 
 #[test]
@@ -375,6 +328,53 @@ fn ctrl_delete_ignores_non_learning_candidate() {
 }
 
 #[test]
+fn prefix_learning_is_offered_below_the_typed_reading() {
+    // A history entry longer than what was typed still appears, but the
+    // highlight is a candidate for the typed reading itself.
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
+    engine.dicts.system = Some(dict_from_json(
+        r#"[{"reading":"あい","candidates":[{"surface":"愛","score":1.0}]}]"#,
+    ));
+
+    let texts: Vec<String> = engine
+        .build_conversion_candidates("あい", "あい", "", 9)
+        .into_iter()
+        .map(|c| c.text)
+        .collect();
+    let exact = texts
+        .iter()
+        .position(|t| t == "愛")
+        .expect("exact dict hit");
+    let predicted = texts
+        .iter()
+        .position(|t| t == "挨拶")
+        .expect("prefix learning hit");
+    assert!(
+        exact < predicted,
+        "the typed reading's candidate must outrank the prediction, got {texts:?}"
+    );
+    assert_ne!(texts[0], "挨拶");
+}
+
+#[test]
+fn exact_learning_still_heads_the_list_ahead_of_a_prediction() {
+    let mut engine = engine_with_learned("あい", "藍");
+    engine.learning.as_mut().unwrap().record("あいさつ", "挨拶");
+
+    let texts: Vec<String> = engine
+        .build_conversion_candidates("あい", "あい", "", 9)
+        .into_iter()
+        .map(|c| c.text)
+        .collect();
+    // The reading in kana leads the list; the exact learning entry is the
+    // first answer after it, ahead of the prediction.
+    assert_eq!(texts[0], "あい");
+    assert_eq!(texts[1], "藍");
+    let predicted = texts.iter().position(|t| t == "挨拶").expect("prediction");
+    assert!(predicted > 1);
+}
+
+#[test]
 fn ctrl_delete_removes_prefix_matched_entry_by_full_reading() {
     // A prefix-matched learning candidate carries its own (longer) reading;
     // deletion must remove the cache entry under that full reading.
@@ -384,6 +384,22 @@ fn ctrl_delete_removes_prefix_matched_entry_by_full_reading() {
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
 
+    // The prediction stays in the list, below candidates for the typed
+    // reading, so it is not the initial selection. Step to it.
+    let len = engine.state().candidates().unwrap().len();
+    for _ in 0..len {
+        let selected = engine
+            .state()
+            .candidates()
+            .unwrap()
+            .selected()
+            .unwrap()
+            .clone();
+        if selected.text == "挨拶" {
+            break;
+        }
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
     let selected = engine
         .state()
         .candidates()

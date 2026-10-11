@@ -5,6 +5,18 @@
 use super::candidate::{CandidateList, CandidateSource};
 use super::preedit::Preedit;
 
+/// How a Conversion state came about, which decides what Space does in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConversionStage {
+    /// The usual case: Space steps to the next candidate.
+    #[default]
+    Open,
+    /// Tab stepped into the prediction rows of the window that was showing
+    /// while typing. Space leaves them for the conversion of exactly what
+    /// was typed.
+    Predicted,
+}
+
 /// The current state of the IME
 #[derive(Debug, Clone, Default)]
 pub enum InputState {
@@ -28,6 +40,8 @@ pub enum InputState {
         reading: String,
         /// Active Ctrl+R source filter; `None` shows the full list
         filter: Option<CandidateSource>,
+        /// Where the conversion came from; see [`ConversionStage`]
+        stage: ConversionStage,
     },
 }
 
@@ -60,6 +74,14 @@ impl InputState {
         match self {
             Self::Conversion { filter, .. } => *filter,
             _ => None,
+        }
+    }
+
+    /// The presentation stage in the Conversion state (`Open` elsewhere).
+    pub fn stage(&self) -> ConversionStage {
+        match self {
+            Self::Conversion { stage, .. } => *stage,
+            _ => ConversionStage::Open,
         }
     }
 

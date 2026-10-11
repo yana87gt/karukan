@@ -694,7 +694,12 @@ fn test_space_conversion_beams_the_tail_window() {
     }
     engine.process_key(&press_key(Keysym::SPACE));
     let texts = shown_texts(&engine);
-    assert_eq!(&texts[..2], ["合い上", "合い植え"], "texts were: {texts:?}");
+    // The reading in kana leads; the grid answer and the beam follow it.
+    assert_eq!(
+        &texts[1..3],
+        ["合い上", "合い植え"],
+        "texts were: {texts:?}"
+    );
 }
 
 #[test]
@@ -713,7 +718,12 @@ fn test_space_head_is_the_live_grid_conversion() {
     }
     engine.process_key(&press_key(Keysym::SPACE));
     let texts = shown_texts(&engine);
-    assert_eq!(&texts[..2], ["合い上", "合い植え"], "texts were: {texts:?}");
+    // The reading in kana leads; the grid answer and the beam follow it.
+    assert_eq!(
+        &texts[1..3],
+        ["合い上", "合い植え"],
+        "texts were: {texts:?}"
+    );
 }
 
 #[test]

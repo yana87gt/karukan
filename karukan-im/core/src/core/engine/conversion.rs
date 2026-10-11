@@ -44,6 +44,40 @@ pub(super) fn width_annotation(text: &str) -> Option<&'static str> {
     }
 }
 
+/// Split `items` into (exact reading, prefix extension), preserving order.
+///
+/// A candidate extends the typed reading when it carries a different one —
+/// the full reading of a history or dictionary prediction.
+pub(super) fn partition_by_extension<T>(
+    items: Vec<T>,
+    typed: &str,
+    reading_of: impl Fn(&T) -> Option<&str>,
+) -> (Vec<T>, Vec<T>) {
+    let mut exact = Vec::new();
+    let mut predictive = Vec::new();
+    for item in items {
+        if reading_of(&item).is_some_and(|reading| reading != typed) {
+            predictive.push(item);
+        } else {
+            exact.push(item);
+        }
+    }
+    (exact, predictive)
+}
+
+/// The row a conversion starts on. The list leads with the reading in kana
+/// (the Mac's first row), but asking for a conversion wants an answer, so
+/// selection starts on the row after it. A kana the user has taught for this
+/// reading (a learning candidate) is the answer itself and stays selected.
+pub(super) fn answer_row(candidates: &[Candidate], reading: &str) -> usize {
+    let skips_kana = candidates.len() > 1
+        && karukan_engine::contains_kana(reading)
+        && candidates
+            .first()
+            .is_some_and(|c| c.text == reading && c.source != Some(CandidateSource::Learning));
+    usize::from(skips_kana)
+}
+
 /// Helper for building a deduplicated list of conversion candidates.
 ///
 /// Two push paths exist: [`push`] dedups by text (skips duplicates), and
@@ -87,8 +121,8 @@ impl CandidateBuilder {
 }
 
 impl InputMethodEngine {
-    /// Start kanji conversion for the current buffer (Space/Down/Tab).
-    pub(super) fn start_conversion(&mut self, learning: LearningLookup) -> EngineResult {
+    /// Start kanji conversion for the current buffer (Space/Down).
+    pub(super) fn start_conversion(&mut self) -> EngineResult {
         // Resolve the reading without touching the composition, so Esc
         // returns to an editable buffer with the romaji tail still live.
         let reading = self.input_buf.settled_reading(&self.converters.romaji);
@@ -107,13 +141,8 @@ impl InputMethodEngine {
         }
 
         // Get candidates from kanji converter (use full num_candidates for explicit conversion)
-        let mut candidates = self.build_conversion_candidates(
-            &reading,
-            &base,
-            &pending,
-            self.config.num_candidates,
-            learning,
-        );
+        let mut candidates =
+            self.build_conversion_candidates(&reading, &base, &pending, self.config.num_candidates);
 
         let seen: HashSet<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
         if !prev_suggest_text.is_empty()
@@ -133,7 +162,8 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        let candidate_list = self.to_conversion_candidate_list(candidates, &reading);
+        let mut candidate_list = self.to_conversion_candidate_list(candidates, &reading);
+        candidate_list.set_cursor(answer_row(candidate_list.candidates(), &reading));
         self.enter_conversion_state(&reading, candidate_list)
     }
 
@@ -161,6 +191,17 @@ impl InputMethodEngine {
         reading: &str,
         candidates: CandidateList,
     ) -> EngineResult {
+        self.enter_conversion_state_staged(reading, candidates, ConversionStage::Open)
+    }
+
+    /// [`Self::enter_conversion_state`] for a given [`ConversionStage`]. A
+    /// conversion entered from the prediction rows is `Predicted`.
+    pub(super) fn enter_conversion_state_staged(
+        &mut self,
+        reading: &str,
+        candidates: CandidateList,
+        stage: ConversionStage,
+    ) -> EngineResult {
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
 
         let preedit = Preedit::with_text_highlighted(&selected_text);
@@ -171,6 +212,7 @@ impl InputMethodEngine {
             reading: reading.to_string(),
             // A fresh conversion always starts unfiltered
             filter: None,
+            stage,
         };
 
         // After the state assignment: the aux header reads the active filter.
@@ -280,8 +322,13 @@ impl InputMethodEngine {
         }
     }
 
-    /// Build the mixed candidate list, deduped in priority order:
-    /// Learning → User Dictionary → Model → System Dictionary → Fallback.
+    /// Build the mixed candidate list, deduped in priority order.
+    ///
+    /// Exact-reading candidates come first: Learning → User Dictionary →
+    /// Model → System Dictionary → Fallback. Prefix extensions — a learning
+    /// or dictionary entry whose reading continues past what was typed —
+    /// follow that block, so a history prediction is offered without being
+    /// the initial selection.
     ///
     /// `base`/`pending` split the reading for the dictionary lookup (the
     /// unresolved romaji tail narrows prediction).
@@ -291,7 +338,6 @@ impl InputMethodEngine {
         base: &str,
         pending: &str,
         num_candidates: usize,
-        learning: LearningLookup,
     ) -> Vec<AnnotatedCandidate> {
         // No converter (still loading in the background, or loading failed)
         // just means no model candidates: symbol-only and early keystrokes
@@ -302,37 +348,48 @@ impl InputMethodEngine {
         let hiragana = reading.to_string();
         let katakana = karukan_engine::hiragana_to_katakana(reading);
 
-        // Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
+        // Exact-reading candidates, then prefix extensions. A prediction
+        // whose reading runs past `reading` must not become the highlight.
         let mut builder = CandidateBuilder::new();
 
-        // 1. Learning cache candidates (highest priority).
+        let (learning_exact, learning_predictive) =
+            partition_by_extension(self.lookup_learning_candidates(reading), reading, |c| {
+                c.reading.as_deref()
+            });
+
+        // 1. Exact learning matches (highest priority).
         //    Force-inserted so they win against duplicate text from later sources.
-        //    Skipped when the caller asks for a learning-free conversion (Tab key).
-        if learning == LearningLookup::Use {
-            for c in self.lookup_learning_candidates(reading) {
-                // Exact matches have reading == input reading; use None to avoid redundancy
-                let cand_reading = c.reading.filter(|r| r != reading);
-                builder.push_force(
-                    AnnotatedCandidate::new(c.text, CandidateSource::Learning)
-                        .with_reading(cand_reading),
-                );
-            }
+        for c in learning_exact {
+            builder.push_force(AnnotatedCandidate::new(c.text, CandidateSource::Learning));
         }
 
-        // 2. User dictionary candidates (system dictionary follows the model
-        //    in step 4, so the two are split here).
-        let (user_dict, system_dict): (Vec<_>, Vec<_>) = self
-            .search_dictionaries(
+        // 2. User dictionary, exact matches only. Predictive entries are
+        //    held back with the other prefix extensions. System dictionary
+        //    exact matches follow the model.
+        let (user_exact, user_predictive, system_exact, system_predictive) = {
+            let mut user_exact = Vec::new();
+            let mut user_predictive = Vec::new();
+            let mut system_exact = Vec::new();
+            let mut system_predictive = Vec::new();
+            for ac in self.search_dictionaries(
                 base,
                 pending,
                 usize::MAX,
                 usize::MAX,
                 MIN_PREDICTIVE_PREFIX_CHARS,
                 None,
-            )
-            .into_iter()
-            .partition(|ac| ac.source == CandidateSource::UserDictionary);
-        for ac in user_dict {
+            ) {
+                let predictive = ac.reading.is_some();
+                match (ac.source, predictive) {
+                    (CandidateSource::UserDictionary, false) => user_exact.push(ac),
+                    (CandidateSource::UserDictionary, true) => user_predictive.push(ac),
+                    (_, true) => system_predictive.push(ac),
+                    (_, false) => system_exact.push(ac),
+                }
+            }
+            (user_exact, user_predictive, system_exact, system_predictive)
+        };
+        for ac in user_exact {
             builder.push(ac);
         }
 
@@ -352,8 +409,8 @@ impl InputMethodEngine {
             }
         }
 
-        // 4. System dictionary candidates
-        for ac in system_dict {
+        // 4. System dictionary, exact matches only.
+        for ac in system_exact {
             builder.push(ac);
         }
 
@@ -381,6 +438,23 @@ impl InputMethodEngine {
             );
         }
 
+        // Prefix extensions: still offered, below every candidate for the
+        // reading that was actually typed. `push` (not force) so a surface
+        // already shown for the exact reading stays where it is.
+        for c in learning_predictive {
+            let cand_reading = c.reading.filter(|r| r != reading);
+            builder.push(
+                AnnotatedCandidate::new(c.text, CandidateSource::Learning)
+                    .with_reading(cand_reading),
+            );
+        }
+        for ac in user_predictive {
+            builder.push(ac);
+        }
+        for ac in system_predictive {
+            builder.push(ac);
+        }
+
         // 7. Back-fill descriptions. Symbol names are Fallback-only —
         //    model/dict/learning candidates must not inherit labels like
         //    「金 = 部首」 — while width annotations (`[全]カタカナ`) apply to
@@ -397,7 +471,18 @@ impl InputMethodEngine {
                 .map(str::to_string);
         }
 
-        builder.into_candidates()
+        // The reading in kana leads the list, as the first row of the Mac's
+        // window. Selection starts past it (`answer_row`), so it is
+        // reachable by stepping back and by Ctrl+1 rather than in the way.
+        let mut candidates = builder.into_candidates();
+        if karukan_engine::contains_kana(reading)
+            && let Some(at) = candidates.iter().position(|c| c.text == reading)
+            && at > 0
+        {
+            let kana = candidates.remove(at);
+            candidates.insert(0, kana);
+        }
+        candidates
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -547,6 +632,21 @@ impl InputMethodEngine {
             // way Tab and Space step forward: mozc-compatible muscle memory.
             Keysym::ISO_LEFT_TAB => self.prev_candidate(),
             Keysym::TAB | Keysym::SPACE if key.modifiers.shift_key => self.prev_candidate(),
+            // Space after Tab stepped into the predictions leaves them for the
+            // conversion of exactly what was typed.
+            Keysym::SPACE
+                if !key.modifiers.control_key
+                    && matches!(
+                        self.state,
+                        InputState::Conversion {
+                            stage: ConversionStage::Predicted,
+                            ..
+                        }
+                    ) =>
+            {
+                self.set_composing_state();
+                self.start_conversion()
+            }
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.next_candidate(),
             Keysym::UP => self.prev_candidate(),
             Keysym::PAGE_DOWN => self.next_candidate_page(),
@@ -687,7 +787,7 @@ impl InputMethodEngine {
         self.in_composing(true, |engine| engine.insert_chunk_break());
         match filter {
             Some(source) => self.start_conversion_with_filter(source),
-            None => self.start_conversion(LearningLookup::Use),
+            None => self.start_conversion(),
         }
     }
 
@@ -810,13 +910,8 @@ impl InputMethodEngine {
         let prev_filter = self.state.filter();
         let prev_cursor = self.state.candidates().map(|c| c.cursor()).unwrap_or(0);
 
-        let candidates = self.build_conversion_candidates(
-            &reading,
-            &reading,
-            "",
-            self.config.num_candidates,
-            LearningLookup::Use,
-        );
+        let candidates =
+            self.build_conversion_candidates(&reading, &reading, "", self.config.num_candidates);
         if candidates.is_empty() {
             return self.cancel_conversion();
         }

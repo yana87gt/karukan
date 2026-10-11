@@ -205,7 +205,7 @@ fn test_ctrl_digit_selects_candidate_while_composing() {
     let mut engine = InputMethodEngine::new();
     engine.converters.kanji = None;
     engine.dicts.user = Some(dict_from_json(
-        r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
+        r#"[{"reading":"あいさつ","candidates":[{"surface":"挨拶","score":1.0}]}]"#,
     ));
 
     engine.process_key(&press('a'));
@@ -223,13 +223,13 @@ fn test_ctrl_digit_selects_candidate_while_composing() {
     // the digit it is actually shown under.
     let digit = shown
         .iter()
-        .position(|c| c.text == "藍")
+        .position(|c| c.text == "挨拶")
         .expect("dictionary candidate in the suggestion window")
         + 1;
     assert!(matches!(engine.state(), InputState::Composing { .. }));
 
     let result = engine.process_key(&press_ctrl(Keysym(b'0' as u32 + digit as u32)));
-    assert_eq!(committed(&result).as_deref(), Some("藍"));
+    assert_eq!(committed(&result).as_deref(), Some("挨拶"));
     assert!(matches!(engine.state(), InputState::Empty));
 }
 

@@ -3,6 +3,40 @@
 use super::filter::source_for_key;
 use super::*;
 
+/// Suggestion list: exact-reading candidates, then prefix extensions.
+///
+/// Learning and dictionary predictions stay in the window, below every
+/// candidate for the reading actually typed, so the highlight is never a
+/// continuation the user has not typed yet. `rewriters` adds the kana and
+/// symbol variants; the model path leaves them out, matching the previous
+/// composing list.
+fn ordered_suggestions(
+    engine: &InputMethodEngine,
+    reading: &str,
+    model: Vec<Candidate>,
+    rewriters: bool,
+) -> Vec<Candidate> {
+    let (learning_exact, learning_predictive) = super::conversion::partition_by_extension(
+        engine.lookup_learning_candidates(reading),
+        reading,
+        |c| c.reading.as_deref(),
+    );
+    let (dict_exact, dict_predictive) = super::conversion::partition_by_extension(
+        engine.lookup_dict_candidates(reading),
+        reading,
+        |c| c.reading.as_deref(),
+    );
+    let mut all = learning_exact;
+    append_candidates_dedup(&mut all, model);
+    append_candidates_dedup(&mut all, dict_exact);
+    if rewriters {
+        append_candidates_dedup(&mut all, engine.lookup_rewriter_variants(reading));
+    }
+    append_candidates_dedup(&mut all, learning_predictive);
+    append_candidates_dedup(&mut all, dict_predictive);
+    all
+}
+
 /// Append candidates to `target`, skipping duplicates by text.
 fn append_candidates_dedup(target: &mut Vec<Candidate>, source: Vec<Candidate>) {
     for c in source {
@@ -45,15 +79,30 @@ impl InputMethodEngine {
             None
         };
 
+        // Live conversion is off: nothing in the preedit converts, and like
+        // the Mac's Japanese input the window offers predictions, the
+        // continuations of what was typed. Converting what was typed is
+        // Space's job.
+        // Readings without kana (symbols, `。。。`) have no continuations to
+        // predict; they keep the rewriter variants (`…`, `『`) below.
+        if convert
+            && !self.live.enabled
+            && matches!(
+                self.mode.current(),
+                InputMode::Hiragana | InputMode::Katakana
+            )
+            && karukan_engine::contains_kana(&full_reading)
+        {
+            return self.prediction_suggest_result(candidates.is_some());
+        }
+
         let Some((candidates, reading)) = candidates else {
             // No useful model suggestion — still show learning, dictionary,
             // and rewriter variants (e.g. `「` → `『`, `【`, …).
             self.live.shown = false;
             let preedit = self.set_composing_state();
             let reading = full_reading;
-            let mut all_candidates = self.lookup_learning_candidates(&reading);
-            append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
-            append_candidates_dedup(&mut all_candidates, self.lookup_rewriter_variants(&reading));
+            let all_candidates = ordered_suggestions(self, &reading, Vec::new(), true);
             let aux = self.format_aux_composing();
             if all_candidates.is_empty() {
                 self.shown_suggestions = CandidateList::default();
@@ -82,19 +131,76 @@ impl InputMethodEngine {
         self.suggest_result(candidates, &reading)
     }
 
-    /// Build the auto-suggest result (preedit, candidates, aux), ordered
-    /// learning → model → dictionary. The model candidates keep the list
-    /// non-empty, so the candidate window — whose aux line shows the raw
+    /// The composing window without live conversion. Its predictions are
+    /// the learning and dictionary entries whose reading continues past what
+    /// was typed (らいぶ → ライブエリア, ライブラリ, …), the rows Tab steps
+    /// into. The window holds the predictions alone; the conversion of the
+    /// reading waits for Space.
+    /// The model runs in `chunked_auto_suggest` either way (it keeps the
+    /// chunk grid and the cache warm).
+    fn prediction_suggest_result(&mut self, model_ran: bool) -> EngineResult {
+        self.live.shown = false;
+        let preedit = self.set_composing_state();
+        let reading = self.input_buf.reading();
+        let (_, learning) = super::conversion::partition_by_extension(
+            self.lookup_learning_candidates(&reading),
+            &reading,
+            |c| c.reading.as_deref(),
+        );
+        let (_, dict) = super::conversion::partition_by_extension(
+            self.lookup_dict_candidates(&reading),
+            &reading,
+            |c| c.reading.as_deref(),
+        );
+        let mut all = learning;
+        append_candidates_dedup(&mut all, dict);
+        let aux = if model_ran {
+            self.format_aux_suggest()
+        } else {
+            self.format_aux_composing()
+        };
+        if all.is_empty() {
+            self.shown_suggestions = CandidateList::default();
+            return EngineResult::consumed()
+                .with_action(EngineAction::UpdatePreedit(preedit))
+                .with_action(EngineAction::HideCandidates)
+                .with_action(EngineAction::UpdateAuxText(aux));
+        }
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(self.show_suggestions(all))
+            .with_action(EngineAction::UpdateAuxText(aux))
+    }
+
+    /// Tab while typing: step into the suggestion window that is showing, its
+    /// head selected, keeping exactly the list the user was looking at
+    /// instead of computing a new one (the Mac's Tab on its prediction
+    /// window). Space from there converts what was typed instead. Without a
+    /// window to step into (hidden by `candidate_window = "conversion"`, or
+    /// nothing to suggest), or while a romaji tail is unresolved — the list
+    /// was built for the reading without it — Tab converts like Space.
+    fn select_shown_suggestions(&mut self) -> EngineResult {
+        if self.shown_suggestions.is_empty() || !self.input_buf.pending().is_empty() {
+            return self.start_conversion();
+        }
+        let reading = self.input_buf.settled_reading(&self.converters.romaji);
+        let mut list = self.shown_suggestions.clone();
+        list.set_cursor(0);
+        self.live.shown = false;
+        self.enter_conversion_state_staged(&reading, list, ConversionStage::Predicted)
+    }
+
+    /// Build the auto-suggest result (preedit, candidates, aux). Exact-reading
+    /// candidates lead; prefix extensions follow. The model candidates keep
+    /// the list non-empty, so the candidate window — whose aux line shows the raw
     /// reading — stays on screen for the whole live conversion.
     fn suggest_result(&mut self, candidates: Vec<String>, reading: &str) -> EngineResult {
         let preedit = self.set_composing_state();
-        let mut all_candidates = self.lookup_learning_candidates(reading);
         let model_candidates: Vec<Candidate> = candidates
             .into_iter()
             .map(|s| Candidate::with_reading(s, reading))
             .collect();
-        append_candidates_dedup(&mut all_candidates, model_candidates);
-        append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(reading));
+        let all_candidates = ordered_suggestions(self, reading, model_candidates, false);
         let aux = self.format_aux_suggest();
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(preedit))
@@ -268,11 +374,11 @@ impl InputMethodEngine {
                 let space = self.space_char();
                 self.input_char(space)
             }
-            // Tab triggers conversion that bypasses the learning cache, so users
-            // can escape stale or unwanted learned entries (mozc binds Tab to a
-            // different conversion path — PredictAndConvert — in the same spirit).
-            Keysym::TAB => self.start_conversion(LearningLookup::Skip),
-            Keysym::SPACE | Keysym::DOWN => self.start_conversion(LearningLookup::Use),
+            // Tab selects the head of the window already on screen (Mac's
+            // Japanese input does the same with its prediction window),
+            // where Space runs a conversion.
+            Keysym::TAB => self.select_shown_suggestions(),
+            Keysym::SPACE | Keysym::DOWN => self.start_conversion(),
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),
             Keysym::HOME => self.move_caret_home(),

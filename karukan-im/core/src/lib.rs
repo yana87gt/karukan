@@ -11,4 +11,4 @@ pub mod server;
 
 pub use core::engine::{EngineAction, EngineResult, InputMethodEngine};
 pub use core::keycode::{KeyEvent, KeyModifiers, Keysym};
-pub use core::state::InputState;
+pub use core::state::{ConversionStage, InputState};

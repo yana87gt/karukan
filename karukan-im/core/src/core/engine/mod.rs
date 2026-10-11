@@ -36,7 +36,7 @@ use tracing::{debug, trace};
 use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
 use super::preedit::Preedit;
-use super::state::InputState;
+use super::state::{ConversionStage, InputState};
 use crate::config::settings::{CandidateWindow, Settings, SpaceStyle};
 
 /// A conversion candidate tagged with its source and an optional description.

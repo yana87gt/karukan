@@ -120,7 +120,7 @@ fn conversion_list_gets_all_predictive_candidates() {
     ));
 
     let conversion: Vec<String> = engine
-        .build_conversion_candidates("わせ", "わせ", "", 1, LearningLookup::Use)
+        .build_conversion_candidates("わせ", "わせ", "", 1)
         .into_iter()
         .map(|c| c.text)
         .collect();
