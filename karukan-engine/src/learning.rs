@@ -203,6 +203,11 @@ impl LearningCache {
     }
 
     /// Save the cache to a TSV file, evicting low-score entries if over capacity.
+    ///
+    /// The file is written beside `path` and renamed over it, so a save
+    /// that fails part-way (a full disk, a crash) leaves the previous file
+    /// whole. Writing in place truncates first, and a truncated file loads
+    /// as a shorter history with no sign anything was lost.
     pub fn save(&mut self, path: &Path) -> anyhow::Result<()> {
         self.evict();
 
@@ -210,6 +215,20 @@ impl LearningCache {
             std::fs::create_dir_all(parent)?;
         }
 
+        let tmp = temp_path(path);
+        let written = self
+            .write_tsv(&tmp)
+            .and_then(|()| Ok(std::fs::rename(&tmp, path)?));
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(error);
+        }
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Write every entry to `path` and flush it to disk.
+    fn write_tsv(&self, path: &Path) -> anyhow::Result<()> {
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
         writeln!(writer, "# karukan learning cache v1")?;
@@ -231,7 +250,9 @@ impl LearningCache {
         }
 
         writer.flush()?;
-        self.dirty = false;
+        // On disk before the rename makes it the cache: a crash right after
+        // must not leave the new name pointing at unwritten data.
+        writer.get_ref().sync_all()?;
         Ok(())
     }
 
@@ -288,6 +309,14 @@ impl LearningCache {
             }
         }
     }
+}
+
+/// Where [`LearningCache::save`] writes before renaming over `path`: the
+/// same directory, so the rename never crosses filesystems.
+fn temp_path(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".tmp");
+    path.with_file_name(name)
 }
 
 /// Compute a candidate score: recency-weighted with frequency bonus.
@@ -428,6 +457,39 @@ mod tests {
         let results = loaded.lookup("きょう");
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].0, "今日"); // frequency 2
+    }
+
+    #[test]
+    fn test_save_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("learning.tsv");
+        let mut cache = cache_with(100);
+        cache.record("きょう", "今日");
+        cache.save(&path).unwrap();
+
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["learning.tsv"]);
+    }
+
+    #[test]
+    fn test_failed_save_keeps_the_previous_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("learning.tsv");
+        let mut cache = cache_with(100);
+        cache.record("きょう", "今日");
+        cache.save(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+
+        // A directory where the temp file goes: the write cannot start.
+        std::fs::create_dir(temp_path(&path)).unwrap();
+        cache.record("あした", "明日");
+        assert!(cache.save(&path).is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        assert!(cache.is_dirty(), "still unsaved, so the next save retries");
     }
 
     #[test]
