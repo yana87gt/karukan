@@ -240,13 +240,14 @@ impl InputMethodEngine {
             .with_action(EngineAction::UpdateAuxText(aux))
     }
 
-    /// Tab while typing: step into the suggestion window that is showing, its
-    /// head selected, keeping exactly the list the user was looking at
-    /// instead of computing a new one (the Mac's Tab on its prediction
-    /// window). Space from there converts what was typed instead. Without a
-    /// window to step into (hidden by `candidate_window = "conversion"`, or
-    /// nothing to suggest), or while a romaji tail is unresolved — the list
-    /// was built for the reading without it — Tab converts like Space.
+    /// Tab or ↓ while typing: step into the suggestion window that is
+    /// showing, its head selected, keeping exactly the list the user was
+    /// looking at instead of computing a new one (the Mac's Tab and ↓ on its
+    /// prediction window). Space from there converts what was typed instead.
+    /// Without a window to step into (hidden by
+    /// `candidate_window = "conversion"`, or nothing to suggest), or while a
+    /// romaji tail is unresolved — the list was built for the reading
+    /// without it — the key converts like Space.
     fn select_shown_suggestions(&mut self) -> EngineResult {
         // A window with no prediction rows (`divider == 0`) has nothing to
         // step into either.
@@ -260,7 +261,7 @@ impl InputMethodEngine {
     }
 
     /// ↑ while typing: step into the window from the bottom, its last row
-    /// selected — the mirror of ↓, which enters from the top. Without a
+    /// selected — the mirror of Tab and ↓, which enter from the top. Without a
     /// window to step into (see [`Self::select_shown_suggestions`]) the key
     /// is consumed and does nothing, rather than left for the application
     /// to act on mid-composition.
@@ -465,11 +466,11 @@ impl InputMethodEngine {
                 let space = self.space_char();
                 self.input_char(space)
             }
-            // Tab selects the head of the window already on screen (Mac's
-            // Japanese input does the same with its prediction window),
-            // where Space runs a conversion.
-            Keysym::TAB => self.select_shown_suggestions(),
-            Keysym::SPACE | Keysym::DOWN => self.start_conversion(),
+            // Tab and ↓ select the head of the window already on screen
+            // (Mac's Japanese input does the same with its prediction
+            // window), where Space runs a conversion.
+            Keysym::TAB | Keysym::DOWN => self.select_shown_suggestions(),
+            Keysym::SPACE => self.start_conversion(),
             Keysym::UP => self.select_last_shown_suggestion(),
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),

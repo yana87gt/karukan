@@ -121,7 +121,7 @@ impl CandidateBuilder {
 }
 
 impl InputMethodEngine {
-    /// Start kanji conversion for the current buffer (Space/Down).
+    /// Start kanji conversion for the current buffer (Space).
     pub(super) fn start_conversion(&mut self) -> EngineResult {
         // Resolve the reading without touching the composition, so Esc
         // returns to an editable buffer with the romaji tail still live.

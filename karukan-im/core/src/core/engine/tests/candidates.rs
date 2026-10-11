@@ -3,8 +3,8 @@ use super::*;
 // --- Candidate preservation tests ---
 
 #[test]
-fn test_live_text_preserved_in_conversion_via_down() {
-    // When DOWN is pressed during live conversion, the AI inference result
+fn test_live_text_preserved_in_conversion() {
+    // When Space is pressed during live conversion, the AI inference result
     // (live_conversion_text) should appear in the candidate list.
     let mut engine = make_live_conversion_engine();
 
@@ -13,8 +13,8 @@ fn test_live_text_preserved_in_conversion_via_down() {
     engine.process_key(&press('i'));
     set_live_text(&mut engine, "愛");
 
-    // Press DOWN → start_conversion()
-    let result = engine.process_key(&press_key(Keysym::DOWN));
+    // Press Space → start_conversion()
+    let result = engine.process_key(&press_key(Keysym::SPACE));
     assert!(result.consumed);
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
@@ -36,7 +36,7 @@ fn test_live_text_not_duplicated_in_conversion() {
     // live_conversion_text same as hiragana reading → should not be added
     set_live_text(&mut engine, "あい");
 
-    let result = engine.process_key(&press_key(Keysym::DOWN));
+    let result = engine.process_key(&press_key(Keysym::SPACE));
     assert!(result.consumed);
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
@@ -85,8 +85,8 @@ fn test_empty_live_text_not_added_to_candidates() {
     // Force empty to test the "no live text" scenario
     engine.live.shown = false;
 
-    // DOWN → start_conversion()
-    let result = engine.process_key(&press_key(Keysym::DOWN));
+    // Space → start_conversion()
+    let result = engine.process_key(&press_key(Keysym::SPACE));
     assert!(result.consumed);
 
     // Should have candidates but no empty-string candidate
@@ -370,6 +370,32 @@ fn split_window_numbers_each_part_from_one() {
     let result = engine.process_key(&press_ctrl(Keysym::KEY_2));
     assert_eq!(committed_text(&result), None);
     assert!(result.consumed);
+}
+
+#[test]
+fn down_while_typing_enters_the_window_like_tab() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::DOWN));
+    assert_eq!(engine.state().stage(), ConversionStage::Predicted);
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.selected_text(), Some("挨拶"), "the head prediction");
+    assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
+
+    // And on down through the kana row, as Tab walks.
+    engine.process_key(&press_key(Keysym::DOWN));
+    assert_eq!(
+        engine.state().candidates().unwrap().selected_text(),
+        Some("あい")
+    );
+
+    // No prediction rows: it converts like Space.
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "okasikute");
+    engine.process_key(&press_key(Keysym::DOWN));
+    let list = engine.state().candidates().expect("conversion state");
+    assert_eq!(list.divider(), None);
+    assert_eq!(list.candidates()[0].text, "おかしくて");
 }
 
 #[test]
