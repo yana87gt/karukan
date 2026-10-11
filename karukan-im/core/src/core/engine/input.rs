@@ -213,17 +213,13 @@ impl InputMethodEngine {
             .take(CandidateList::DEFAULT_PAGE_SIZE - predictions.len())
             .cloned()
             .collect();
-        // Highlight what the next key would select: the head prediction for
-        // Tab, or without predictions the answer Space selects.
-        let cursor = if predictions.is_empty() {
-            super::conversion::answer_row(&answers, reading)
-        } else {
-            0
-        };
+        // Nothing is highlighted: Enter still commits what was typed, and
+        // the first Tab (head prediction) or Space (answer row) is what
+        // selects. Tab past the predictions walks on into the rows below.
         let divider = predictions.len();
         conversions = CandidateList::new(predictions.into_iter().chain(answers).collect())
-            .with_divider(divider);
-        conversions.set_cursor(cursor);
+            .with_divider(divider)
+            .with_no_selection();
 
         let aux = if model_ran {
             self.format_aux_suggest()

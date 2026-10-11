@@ -87,7 +87,8 @@ class CandidateWindowController {
 
     private struct PageState {
         let candidates: [CandidateItem]
-        let cursor: Int
+        /// Selected row; nil when the window is shown with no highlight.
+        let cursor: Int?
         let page: Int
         let totalPages: Int
         /// Row index where the second section starts; nil for one section.
@@ -171,7 +172,7 @@ class CandidateWindowController {
     /// `divider` splits the rows in two parts (the typing window: predictions
     /// above, the conversions Space opens on below).
     func show(
-        candidates: [CandidateItem], cursor: Int, page: Int, totalPages: Int,
+        candidates: [CandidateItem], cursor: Int?, page: Int, totalPages: Int,
         divider: Int? = nil, cursorRect: NSRect?
     ) {
         pageState = PageState(

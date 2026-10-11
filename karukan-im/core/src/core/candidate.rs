@@ -128,6 +128,9 @@ pub struct CandidateList {
     /// is drawn in two (predictions above, conversions below). `Some(0)` is
     /// a list whose first section is empty.
     divider: Option<usize>,
+    /// The window is shown with no row highlighted: nothing is selected yet,
+    /// so Enter still commits the composition. Any cursor move selects.
+    unselected: bool,
 }
 
 impl CandidateList {
@@ -141,6 +144,7 @@ impl CandidateList {
             cursor: 0,
             page_size: Self::DEFAULT_PAGE_SIZE,
             divider: None,
+            unselected: false,
         }
     }
 
@@ -148,6 +152,17 @@ impl CandidateList {
     pub fn with_divider(mut self, divider: usize) -> Self {
         self.divider = Some(divider.min(self.candidates.len()));
         self
+    }
+
+    /// Show the list with no row highlighted until the cursor moves.
+    pub fn with_no_selection(mut self) -> Self {
+        self.unselected = true;
+        self
+    }
+
+    /// Whether a row is selected (false for a list shown without highlight).
+    pub fn has_selection(&self) -> bool {
+        !self.unselected
     }
 
     /// Index of the first row of the second section, if the list has two.
@@ -239,6 +254,7 @@ impl CandidateList {
 
     /// Move to the next candidate
     pub fn move_next(&mut self) -> bool {
+        self.unselected = false;
         if self.cursor + 1 < self.candidates.len() {
             self.cursor += 1;
             true
@@ -253,6 +269,7 @@ impl CandidateList {
 
     /// Move to the previous candidate
     pub fn move_prev(&mut self) -> bool {
+        self.unselected = false;
         if self.cursor > 0 {
             self.cursor -= 1;
             true
@@ -267,6 +284,7 @@ impl CandidateList {
 
     /// Move to the next page
     pub fn next_page(&mut self) -> bool {
+        self.unselected = false;
         if self.candidates.is_empty() {
             return false;
         }
@@ -284,6 +302,7 @@ impl CandidateList {
 
     /// Move to the previous page
     pub fn prev_page(&mut self) -> bool {
+        self.unselected = false;
         if self.candidates.is_empty() {
             return false;
         }
@@ -302,6 +321,7 @@ impl CandidateList {
 
     /// Select a candidate by index within the current page (1-9)
     pub fn select_on_page(&mut self, page_index: usize) -> Option<&Candidate> {
+        self.unselected = false;
         if page_index == 0 || page_index > self.page_size {
             return None;
         }
@@ -317,6 +337,7 @@ impl CandidateList {
 
     /// Move the cursor to `cursor`, clamped into the list (0 when empty).
     pub fn set_cursor(&mut self, cursor: usize) {
+        self.unselected = false;
         self.cursor = cursor.min(self.candidates.len().saturating_sub(1));
     }
 }

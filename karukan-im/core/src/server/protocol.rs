@@ -166,8 +166,10 @@ pub enum Action {
     /// paging internally (Page Up/Down keys move between pages).
     ShowCandidates {
         candidates: Vec<CandidateItem>,
-        /// Selected index within this page.
-        cursor: usize,
+        /// Selected index within this page; absent when the window is shown
+        /// with no row highlighted (nothing selected yet).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cursor: Option<usize>,
         /// Current page (0-based).
         page: usize,
         total_pages: usize,

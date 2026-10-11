@@ -253,7 +253,7 @@ fn split_window_holds_predictions_above_and_space_rows_below() {
     // Below the divider: the very rows Space opens on, kana row first.
     assert_eq!(&texts[1..3], ["あい", "愛"], "texts were: {texts:?}");
     assert_eq!(list.page_divider(), Some(1));
-    assert_eq!(list.cursor(), 0, "the highlight is Tab's target");
+    assert!(!list.has_selection(), "Enter still commits what was typed");
     assert!(texts.len() <= CandidateList::DEFAULT_PAGE_SIZE);
 }
 
@@ -265,7 +265,7 @@ fn split_window_without_predictions_highlights_the_answer_space_selects() {
     assert_eq!(list.divider(), Some(0));
     assert_eq!(list.page_divider(), None, "nothing to separate");
     assert_eq!(list.candidates()[0].text, "おかしくて");
-    assert_eq!(list.cursor(), 1);
+    assert!(!list.has_selection());
 }
 
 #[test]
@@ -277,6 +277,7 @@ fn split_window_tab_enters_the_prediction_rows_and_space_converts_exactly() {
     let list = engine.state().candidates().unwrap();
     assert_eq!(list.selected_text(), Some("挨拶"));
     assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
+    assert!(list.has_selection());
 
     engine.process_key(&press_key(Keysym::SPACE));
     let list = engine.state().candidates().unwrap();
@@ -328,4 +329,27 @@ fn predictions_hold_five_continuations_even_when_the_typed_reading_is_learned() 
         "the typed reading is not a prediction"
     );
     assert!(texts.contains(&"よろしくお願いします".to_string()));
+}
+
+#[test]
+fn split_window_enter_commits_the_typed_reading_and_tab_walks_on_below() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    // Tab past the one prediction lands on the rows Space would have opened.
+    engine.process_key(&press_key(Keysym::TAB));
+    engine.process_key(&press_key(Keysym::TAB));
+    assert_eq!(
+        engine.state().candidates().unwrap().selected_text(),
+        Some("あい")
+    );
+
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Commit(t) if t == "あい"))
+    );
 }

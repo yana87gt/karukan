@@ -22,6 +22,17 @@ final class EngineProtocolTests: XCTestCase {
         XCTAssertEqual(attributes[0].style, "underline")
     }
 
+    func testDecodeShowCandidatesWithoutCursor() throws {
+        let json = """
+            {"consumed":true,"actions":[{"candidates":[{"text":"ライブエリア"},{"text":"らいぶ"}],"divider":1,"page":0,"total_pages":1,"type":"show_candidates"}],"conversion_ms":1,"process_key_ms":2}
+            """
+        let result = try decodeKeyResult(json)
+        guard case .showCandidates(_, let cursor, _, _, _) = result.actions[0] else {
+            return XCTFail("expected show_candidates")
+        }
+        XCTAssertNil(cursor, "no highlighted row")
+    }
+
     func testDecodeShowCandidatesDivider() throws {
         let json = """
             {"consumed":true,"actions":[{"candidates":[{"text":"ライブエリア"},{"text":"らいぶ"}],"cursor":0,"divider":1,"page":0,"total_pages":1,"type":"show_candidates"}],"conversion_ms":1,"process_key_ms":2}

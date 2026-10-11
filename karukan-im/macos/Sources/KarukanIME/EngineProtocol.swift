@@ -30,7 +30,7 @@ struct InitResult: Decodable {
 enum EngineAction: Decodable {
     case updatePreedit(text: String, caret: Int, attributes: [PreeditAttr])
     case showCandidates(
-        candidates: [CandidateItem], cursor: Int, page: Int, totalPages: Int, divider: Int?)
+        candidates: [CandidateItem], cursor: Int?, page: Int, totalPages: Int, divider: Int?)
     case hideCandidates
     case commit(text: String)
     case updateAux(text: String)
@@ -54,7 +54,7 @@ enum EngineAction: Decodable {
         case "show_candidates":
             self = .showCandidates(
                 candidates: try container.decode([CandidateItem].self, forKey: .candidates),
-                cursor: try container.decode(Int.self, forKey: .cursor),
+                cursor: try container.decodeIfPresent(Int.self, forKey: .cursor),
                 page: try container.decode(Int.self, forKey: .page),
                 totalPages: try container.decode(Int.self, forKey: .totalPages),
                 divider: try container.decodeIfPresent(Int.self, forKey: .divider)

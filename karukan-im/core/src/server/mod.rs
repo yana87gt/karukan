@@ -215,7 +215,7 @@ fn to_action(action: EngineAction) -> Action {
                     description: c.description.clone().filter(|s| !s.is_empty()),
                 })
                 .collect(),
-            cursor: list.page_cursor(),
+            cursor: list.has_selection().then(|| list.page_cursor()),
             page: list.current_page(),
             total_pages: list.total_pages(),
             divider: list.page_divider(),
