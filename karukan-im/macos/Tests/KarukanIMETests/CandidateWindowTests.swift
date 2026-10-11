@@ -177,6 +177,15 @@ final class CandidateWindowControllerTests: XCTestCase {
         XCTAssertEqual(single.origin.y, split.origin.y, accuracy: 0.5)
     }
 
+    func testEachPartOfATwoPartWindowIsNumberedFromOne() {
+        // 1. 2. / 1. 2. 3.: the rows Space opens on start over at 1.
+        let numbers = (0..<5).map { CandidateWindowController.rowNumber(index: $0, divider: 2) }
+        XCTAssertEqual(numbers, [1, 2, 1, 2, 3])
+        // One part, with or without the "スペース" header: counted through.
+        XCTAssertEqual(CandidateWindowController.rowNumber(index: 3, divider: nil), 4)
+        XCTAssertEqual(CandidateWindowController.rowNumber(index: 3, divider: 0), 4)
+    }
+
     private func skipWithoutScreen() throws {
         try XCTSkipIf(NSScreen.main == nil, "no screen to place the panel on")
     }

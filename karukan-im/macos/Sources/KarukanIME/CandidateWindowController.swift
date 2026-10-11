@@ -230,7 +230,9 @@ class CandidateWindowController {
             }
             if index < state.candidates.count {
                 addCandidateRow(
-                    state.candidates[index], number: index + 1, selected: index == state.cursor)
+                    state.candidates[index],
+                    number: Self.rowNumber(index: index, divider: state.divider),
+                    selected: index == state.cursor)
             } else {
                 addBlankRow()
             }
@@ -243,6 +245,16 @@ class CandidateWindowController {
         addFooterLabel(auxText ?? "")
 
         positionPanel(cursorRect: cursorRect)
+    }
+
+    /// The number a row is labelled with. Each part of a two-part window
+    /// counts from 1, so the rows Space opens on read 1 (the reading in
+    /// kana), 2, 3, … as they do once Space has left the predictions behind.
+    /// Mirrors `CandidateList::page_row_numbered` in karukan-im, which is
+    /// what Ctrl+digit selects by.
+    static func rowNumber(index: Int, divider: Int?) -> Int {
+        guard let divider, divider > 0, index >= divider else { return index + 1 }
+        return index - divider + 1
     }
 
     private func clearRows() {

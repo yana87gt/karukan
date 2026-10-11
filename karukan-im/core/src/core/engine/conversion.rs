@@ -67,14 +67,14 @@ pub(super) fn partition_by_extension<T>(
 
 /// The row a conversion starts on. The list leads with the reading in kana
 /// (the Mac's first row), but asking for a conversion wants an answer, so
-/// selection starts on the row after it. A kana the user has taught for this
-/// reading (a learning candidate) is the answer itself and stays selected.
+/// selection starts on the row after it. A kana row out of the learning
+/// history is skipped like any other: Enter on a composition records the
+/// kana as typed, so nearly every reading has one, and staying on it would
+/// make the first Space convert to what was already there.
 pub(super) fn answer_row(candidates: &[Candidate], reading: &str) -> usize {
     let skips_kana = candidates.len() > 1
         && karukan_engine::contains_kana(reading)
-        && candidates
-            .first()
-            .is_some_and(|c| c.text == reading && c.source != Some(CandidateSource::Learning));
+        && candidates.first().is_some_and(|c| c.text == reading);
     usize::from(skips_kana)
 }
 
@@ -723,7 +723,7 @@ impl InputMethodEngine {
                     // digits refine below like any printable character, so
                     // typing numbers never conflicts with selection.
                     if let Some(digit) = key.keysym.digit_value() {
-                        return self.select_shown_candidate(digit);
+                        return self.select_numbered_candidate(digit);
                     }
                 }
 

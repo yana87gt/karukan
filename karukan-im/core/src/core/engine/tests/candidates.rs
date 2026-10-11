@@ -218,15 +218,18 @@ fn space_starts_on_the_converted_answer_when_the_top_one_stays_kana() {
 }
 
 #[test]
-fn a_learned_kana_spelling_is_selected_rather_than_skipped() {
-    // The user once committed 「おかしくて」 as it is: that is the answer.
-    let mut engine = engine_with_learned("おかしくて", "おかしくて");
-    type_romaji(&mut engine, "okasikute");
+fn a_learned_kana_spelling_is_skipped_like_any_kana_row() {
+    // Enter on a composition records the kana as typed, so a learned kana
+    // row is the common case, and Space must still convert.
+    let mut engine = engine_with_learned("あい", "あい");
+    engine.dicts.system = Some(dict_from_json(AI_WORDS));
+    type_romaji(&mut engine, "ai");
     engine.process_key(&press_key(Keysym::SPACE));
-    assert_eq!(
-        engine.state().candidates().unwrap().selected_text(),
-        Some("おかしくて")
-    );
+
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.candidates()[0].text, "あい");
+    assert_eq!(list.cursor(), 1);
+    assert_eq!(list.selected_text(), Some("愛"));
 }
 
 // --- The two-part window (macOS): predictions above, Space's rows below ---
@@ -329,6 +332,44 @@ fn predictions_hold_five_continuations_even_when_the_typed_reading_is_learned() 
         "the typed reading is not a prediction"
     );
     assert!(texts.contains(&"よろしくお願いします".to_string()));
+}
+
+fn committed_text(result: &EngineResult) -> Option<&str> {
+    result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(text) => Some(text.as_str()),
+        _ => None,
+    })
+}
+
+#[test]
+fn split_window_numbers_each_part_from_one() {
+    // 1. 挨拶 / 1. あい 2. 愛: while typing, a number names a row Space
+    // opens on, the same row it names once Space has been pressed.
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    let result = engine.process_key(&press_ctrl(Keysym::KEY_2));
+    assert_eq!(committed_text(&result), Some("愛"));
+
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::SPACE));
+    let result = engine.process_key(&press_ctrl(Keysym::KEY_2));
+    assert_eq!(committed_text(&result), Some("愛"));
+
+    // With the highlight on a prediction the number is read up there.
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::TAB));
+    let result = engine.process_key(&press_ctrl(Keysym::KEY_1));
+    assert_eq!(committed_text(&result), Some("挨拶"));
+
+    // A number past the part's last row selects nothing.
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::TAB));
+    let result = engine.process_key(&press_ctrl(Keysym::KEY_2));
+    assert_eq!(committed_text(&result), None);
+    assert!(result.consumed);
 }
 
 #[test]

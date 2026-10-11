@@ -310,7 +310,20 @@ impl InputMethodEngine {
         }
     }
 
-    /// Ctrl+1..9: commit the numbered candidate from the list on screen,
+    /// Ctrl+1..9: commit the candidate the window labels `number`. A
+    /// two-part window numbers each part from 1
+    /// ([`CandidateList::page_row_numbered`]).
+    pub(super) fn select_numbered_candidate(&mut self, number: usize) -> EngineResult {
+        let Some(candidates) = self.shown_candidates_mut() else {
+            return EngineResult::not_consumed();
+        };
+        match candidates.page_row_numbered(number) {
+            Some(row) => self.select_shown_candidate(row),
+            None => EngineResult::consumed(),
+        }
+    }
+
+    /// Commit the candidate on row `digit` (1-based) of the page on screen,
     /// whether it came from a conversion or from the composing suggestions.
     /// Consumed even with nothing to select, so the chord never leaks to the
     /// application.

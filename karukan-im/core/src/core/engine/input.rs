@@ -432,7 +432,7 @@ impl InputMethodEngine {
             // window. Bare digits stay plain text input, so numbers can be
             // typed mid-word without ever selecting a candidate.
             if let Some(digit) = key.keysym.digit_value() {
-                return self.select_shown_candidate(digit);
+                return self.select_numbered_candidate(digit);
             }
         }
 

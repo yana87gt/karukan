@@ -180,6 +180,26 @@ impl CandidateList {
             .map(|d| d - start)
     }
 
+    /// The row on the current page (1-based, as [`Self::select_on_page`]
+    /// takes it) that the window labels `number`. A two-part page numbers
+    /// each part from 1, so the number is read in the part holding the
+    /// highlight, and in the second part while nothing is highlighted: its
+    /// rows are the ones Space opens on, so a number means the same row
+    /// before and after Space.
+    pub fn page_row_numbered(&self, number: usize) -> Option<usize> {
+        let Some(divider) = self.page_divider() else {
+            return Some(number);
+        };
+        if number == 0 {
+            return None;
+        }
+        if self.has_selection() && self.page_cursor() < divider {
+            (number <= divider).then_some(number)
+        } else {
+            Some(divider + number)
+        }
+    }
+
     /// Create a candidate list from strings (test fixture).
     #[cfg(test)]
     pub fn from_strings(strings: impl IntoIterator<Item = impl Into<String>>) -> Self {

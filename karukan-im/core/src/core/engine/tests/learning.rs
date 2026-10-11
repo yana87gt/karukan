@@ -131,7 +131,9 @@ fn ctrl_delete_keeps_surface_that_another_source_also_produces() {
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
+    // Space starts past the kana row, learned or not; step back onto it.
     engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::UP));
 
     let selected = engine
         .state()
