@@ -228,3 +228,76 @@ fn a_learned_kana_spelling_is_selected_rather_than_skipped() {
         Some("おかしくて")
     );
 }
+
+// --- The two-part window (macOS): predictions above, Space's rows below ---
+
+fn split_engine() -> InputMethodEngine {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        live_conversion: false,
+        split_window: true,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_from_json(AI_WORDS));
+    engine
+}
+
+#[test]
+fn split_window_holds_predictions_above_and_space_rows_below() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+
+    let list = &engine.shown_suggestions;
+    let texts = candidate_texts(list);
+    assert_eq!(list.divider(), Some(1));
+    assert_eq!(texts[0], "挨拶", "the prediction leads");
+    // Below the divider: the very rows Space opens on, kana row first.
+    assert_eq!(&texts[1..3], ["あい", "愛"], "texts were: {texts:?}");
+    assert_eq!(list.page_divider(), Some(1));
+    assert_eq!(list.cursor(), 0, "the highlight is Tab's target");
+    assert!(texts.len() <= CandidateList::DEFAULT_PAGE_SIZE);
+}
+
+#[test]
+fn split_window_without_predictions_highlights_the_answer_space_selects() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "okasikute");
+    let list = &engine.shown_suggestions;
+    assert_eq!(list.divider(), Some(0));
+    assert_eq!(list.page_divider(), None, "nothing to separate");
+    assert_eq!(list.candidates()[0].text, "おかしくて");
+    assert_eq!(list.cursor(), 1);
+}
+
+#[test]
+fn split_window_tab_enters_the_prediction_rows_and_space_converts_exactly() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::TAB));
+    assert_eq!(engine.state().stage(), ConversionStage::Predicted);
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.selected_text(), Some("挨拶"));
+    assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.divider(), None, "now the plain conversion list");
+    assert_eq!(list.selected_text(), Some("愛"));
+}
+
+#[test]
+fn split_window_space_leaves_the_predictions_behind() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.divider(), None);
+    assert_eq!(list.selected_text(), Some("愛"));
+}
+
+#[test]
+fn split_window_stays_off_without_a_frontend_that_draws_it() {
+    let mut engine = live_off_engine();
+    engine.dicts.system = Some(dict_from_json(AI_WORDS));
+    type_romaji(&mut engine, "ai");
+    assert_eq!(engine.shown_suggestions.divider(), None);
+}

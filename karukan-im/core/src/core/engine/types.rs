@@ -120,6 +120,10 @@ pub struct EngineConfig {
     pub space: SpaceStyle,
     /// Date/time phrases and their formats
     pub date: DateConfig,
+    /// Typing window in two parts: predictions (Tab) above, the conversions
+    /// Space will offer below. The frontend must draw the divider; without it
+    /// the window holds predictions only.
+    pub split_window: bool,
 }
 
 impl EngineConfig {
@@ -151,6 +155,7 @@ impl EngineConfig {
             width: settings.width,
             space: settings.symbol.space,
             date: settings.date.clone(),
+            split_window: false,
         }
     }
 }
@@ -178,6 +183,7 @@ impl Default for EngineConfig {
             width: WidthRules::default(),
             space: SpaceStyle::default(),
             date: DateConfig::default(),
+            split_window: false,
         }
     }
 }

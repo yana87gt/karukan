@@ -134,8 +134,9 @@ impl InputMethodEngine {
     /// The composing window without live conversion. Its predictions are
     /// the learning and dictionary entries whose reading continues past what
     /// was typed (らいぶ → ライブエリア, ライブラリ, …), the rows Tab steps
-    /// into. The window holds the predictions alone; the conversion of the
-    /// reading waits for Space.
+    /// into. With `split_window` the rows Space will offer for the typed
+    /// reading follow below a divider; without it the window holds the
+    /// predictions alone and the conversion of the reading waits for Space.
     /// The model runs in `chunked_auto_suggest` either way (it keeps the
     /// chunk grid and the cache warm).
     fn prediction_suggest_result(&mut self, model_ran: bool) -> EngineResult {
@@ -154,6 +155,9 @@ impl InputMethodEngine {
         );
         let mut all = learning;
         append_candidates_dedup(&mut all, dict);
+        if self.config.split_window {
+            return self.split_suggest_result(all, &reading, preedit, model_ran);
+        }
         let aux = if model_ran {
             self.format_aux_suggest()
         } else {
@@ -172,6 +176,73 @@ impl InputMethodEngine {
             .with_action(EngineAction::UpdateAuxText(aux))
     }
 
+    /// The two-part window: `predictions` above the divider, below it the
+    /// rows Space opens on (the same list, kana row first), so the first
+    /// Space only moves the highlight into the lower half. One page: the
+    /// conversions fill whatever the predictions leave of it.
+    fn split_suggest_result(
+        &mut self,
+        predictions: Vec<Candidate>,
+        reading: &str,
+        preedit: Preedit,
+        model_ran: bool,
+    ) -> EngineResult {
+        const MAX_PREDICTION_ROWS: usize = 4;
+        let pending = self.input_buf.pending();
+        let annotated = self.build_conversion_candidates(
+            reading,
+            reading,
+            &pending,
+            self.config.num_candidates,
+        );
+        let mut conversions = self.to_conversion_candidate_list(annotated, reading);
+        let predictions: Vec<Candidate> = self
+            .settle_candidates(predictions)
+            .candidates()
+            .iter()
+            .take(MAX_PREDICTION_ROWS)
+            .cloned()
+            .collect();
+        // The conversion list also ends in prefix extensions; those are the
+        // rows above already.
+        let answers: Vec<Candidate> = conversions
+            .candidates()
+            .iter()
+            .filter(|c| c.reading.as_deref().is_none_or(|r| r == reading))
+            .take(CandidateList::DEFAULT_PAGE_SIZE - predictions.len())
+            .cloned()
+            .collect();
+        // Highlight what the next key would select: the head prediction for
+        // Tab, or without predictions the answer Space selects.
+        let cursor = if predictions.is_empty() {
+            super::conversion::answer_row(&answers, reading)
+        } else {
+            0
+        };
+        let divider = predictions.len();
+        conversions = CandidateList::new(predictions.into_iter().chain(answers).collect())
+            .with_divider(divider);
+        conversions.set_cursor(cursor);
+
+        let aux = if model_ran {
+            self.format_aux_suggest()
+        } else {
+            self.format_aux_composing()
+        };
+        if conversions.is_empty() {
+            self.shown_suggestions = CandidateList::default();
+            return EngineResult::consumed()
+                .with_action(EngineAction::UpdatePreedit(preedit))
+                .with_action(EngineAction::HideCandidates)
+                .with_action(EngineAction::UpdateAuxText(aux));
+        }
+        self.shown_suggestions = conversions.clone();
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(EngineAction::ShowCandidates(conversions))
+            .with_action(EngineAction::UpdateAuxText(aux))
+    }
+
     /// Tab while typing: step into the suggestion window that is showing, its
     /// head selected, keeping exactly the list the user was looking at
     /// instead of computing a new one (the Mac's Tab on its prediction
@@ -180,7 +251,12 @@ impl InputMethodEngine {
     /// nothing to suggest), or while a romaji tail is unresolved — the list
     /// was built for the reading without it — Tab converts like Space.
     fn select_shown_suggestions(&mut self) -> EngineResult {
-        if self.shown_suggestions.is_empty() || !self.input_buf.pending().is_empty() {
+        // A window with no prediction rows (`divider == 0`) has nothing to
+        // step into either.
+        if self.shown_suggestions.is_empty()
+            || self.shown_suggestions.divider() == Some(0)
+            || !self.input_buf.pending().is_empty()
+        {
             return self.start_conversion();
         }
         let reading = self.input_buf.settled_reading(&self.converters.romaji);

@@ -124,6 +124,10 @@ pub struct CandidateList {
     cursor: usize,
     /// Number of candidates per page
     page_size: usize,
+    /// Index of the first row of the list's second section, when the window
+    /// is drawn in two (predictions above, conversions below). `Some(0)` is
+    /// a list whose first section is empty.
+    divider: Option<usize>,
 }
 
 impl CandidateList {
@@ -136,7 +140,29 @@ impl CandidateList {
             candidates,
             cursor: 0,
             page_size: Self::DEFAULT_PAGE_SIZE,
+            divider: None,
         }
+    }
+
+    /// Mark where the second section starts (see [`Self::divider`]).
+    pub fn with_divider(mut self, divider: usize) -> Self {
+        self.divider = Some(divider.min(self.candidates.len()));
+        self
+    }
+
+    /// Index of the first row of the second section, if the list has two.
+    pub fn divider(&self) -> Option<usize> {
+        self.divider
+    }
+
+    /// The divider as a row index within the current page, only when it
+    /// separates two non-empty parts of that page.
+    pub fn page_divider(&self) -> Option<usize> {
+        let start = self.page_start();
+        let end = start + self.page_candidates().len();
+        self.divider
+            .filter(|d| (start + 1..end).contains(d))
+            .map(|d| d - start)
     }
 
     /// Create a candidate list from strings (test fixture).

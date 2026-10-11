@@ -169,7 +169,7 @@ impl InputMethodEngine {
 
     /// Map builder output to the public [`CandidateList`] shown in the
     /// conversion window, settled at the configured width.
-    fn to_conversion_candidate_list(
+    pub(super) fn to_conversion_candidate_list(
         &self,
         candidates: Vec<AnnotatedCandidate>,
         reading: &str,

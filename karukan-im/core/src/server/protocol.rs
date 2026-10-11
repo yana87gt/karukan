@@ -171,6 +171,11 @@ pub enum Action {
         /// Current page (0-based).
         page: usize,
         total_pages: usize,
+        /// Row index (within this page) where a second section of the list
+        /// starts, drawn below a divider: the typing window's predictions
+        /// above, the conversions Space opens on below.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        divider: Option<usize>,
     },
     HideCandidates,
     Commit {

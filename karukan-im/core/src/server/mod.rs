@@ -44,7 +44,9 @@ impl ImServer {
     }
 
     pub fn with_settings(settings: Settings) -> Self {
-        let config = EngineConfig::from_settings(&settings);
+        let mut config = EngineConfig::from_settings(&settings);
+        // The macOS frontend draws the two-part typing window.
+        config.split_window = true;
         Self {
             engine: InputMethodEngine::with_config(config),
             settings: Some(settings),
@@ -216,6 +218,7 @@ fn to_action(action: EngineAction) -> Action {
             cursor: list.page_cursor(),
             page: list.current_page(),
             total_pages: list.total_pages(),
+            divider: list.page_divider(),
         },
         EngineAction::HideCandidates => Action::HideCandidates,
         EngineAction::Commit(text) => Action::Commit { text },
