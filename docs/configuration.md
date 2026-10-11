@@ -161,7 +161,7 @@ CPU高負荷時（Rustビルド中など）にかな漢字変換が遅くなる�
 - 保存先: `~/.local/share/karukan-im/learning.tsv`（macOS: `~/Library/Application Support/com.karukan.karukan-im/learning.tsv`）
 - 完全一致と前方一致（予測変換）の両方に対応する。完全一致は候補の先頭に出る。前方一致は、打った読みそのものの候補より後ろに出るので、最初から選択されてはいない
   - 例: 「早稲田大学」を一度変換すると、次回「わせだ」と入力した時点で候補に出る。先頭は「わせだ」自体の変換で、早稲田大学はそれより下
-- 学習候補は変換時・入力中（auto-suggest）の両方で最大3件表示
+- 学習候補は変換時・入力中（auto-suggest）の両方で最大3件表示。Live変換OFFの入力中ウィンドウ（Tabの予測）では、打った読みそのものを除いた前方一致を最大5件まで先に出す
 - スコアはrecency（最終使用日時）重視 + 頻度補正
 - 50文字（`max_surface_chars`）を超える変換結果は学習しない
 - 変換中に学習候補（📝）を選択して `Ctrl+Backspace`（macOSでは Ctrl+delete。`Ctrl+Delete` でも可）を押すと、そのエントリを学習履歴から削除できる。学習候補の選択中はフッターに「Ctrl+Backspaceで履歴から削除」と表示される

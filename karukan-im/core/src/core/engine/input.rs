@@ -3,6 +3,10 @@
 use super::filter::source_for_key;
 use super::*;
 
+/// Most prediction rows the typing window offers (what Tab steps through).
+/// Learning fills them first, the dictionary after.
+const MAX_PREDICTION_ROWS: usize = 5;
+
 /// Suggestion list: exact-reading candidates, then prefix extensions.
 ///
 /// Learning and dictionary predictions stay in the window, below every
@@ -143,8 +147,11 @@ impl InputMethodEngine {
         self.live.shown = false;
         let preedit = self.set_composing_state();
         let reading = self.input_buf.reading();
+        // The whole history, not the capped list: an exact match for the
+        // typed reading would otherwise use up the slots the continuations
+        // (`よろ` → `よろしく…`) are after.
         let (_, learning) = super::conversion::partition_by_extension(
-            self.lookup_learning_candidates(&reading),
+            self.lookup_learning_history(&reading, ""),
             &reading,
             |c| c.reading.as_deref(),
         );
@@ -155,6 +162,7 @@ impl InputMethodEngine {
         );
         let mut all = learning;
         append_candidates_dedup(&mut all, dict);
+        all.truncate(MAX_PREDICTION_ROWS);
         if self.config.split_window {
             return self.split_suggest_result(all, &reading, preedit, model_ran);
         }
@@ -187,7 +195,6 @@ impl InputMethodEngine {
         preedit: Preedit,
         model_ran: bool,
     ) -> EngineResult {
-        const MAX_PREDICTION_ROWS: usize = 4;
         let pending = self.input_buf.pending();
         let annotated = self.build_conversion_candidates(
             reading,
@@ -196,13 +203,7 @@ impl InputMethodEngine {
             self.config.num_candidates,
         );
         let mut conversions = self.to_conversion_candidate_list(annotated, reading);
-        let predictions: Vec<Candidate> = self
-            .settle_candidates(predictions)
-            .candidates()
-            .iter()
-            .take(MAX_PREDICTION_ROWS)
-            .cloned()
-            .collect();
+        let predictions: Vec<Candidate> = self.settle_candidates(predictions).candidates().to_vec();
         // The conversion list also ends in prefix extensions; those are the
         // rows above already.
         let answers: Vec<Candidate> = conversions

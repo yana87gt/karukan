@@ -301,3 +301,31 @@ fn split_window_stays_off_without_a_frontend_that_draws_it() {
     type_romaji(&mut engine, "ai");
     assert_eq!(engine.shown_suggestions.divider(), None);
 }
+
+#[test]
+fn predictions_hold_five_continuations_even_when_the_typed_reading_is_learned() {
+    // 「よろ」 itself is in the history (exact match), plus six continuations.
+    let mut engine = live_off_engine();
+    let mut cache = LearningCache::new(LearningConfig::default());
+    for (reading, surface) in [
+        ("よろ", "よろ"),
+        ("よろしく", "よろしく"),
+        ("よろしくおねがいします", "よろしくお願いします"),
+        ("よろしくおねがいたします", "よろしくお願いたします"),
+        ("よろしくたのむ", "よろしく頼む"),
+        ("よろこび", "喜び"),
+        ("よろず", "万"),
+    ] {
+        cache.record(reading, surface);
+    }
+    engine.learning = Some(cache);
+    type_romaji(&mut engine, "yoro");
+
+    let texts = candidate_texts(&engine.shown_suggestions);
+    assert_eq!(texts.len(), 5, "texts were: {texts:?}");
+    assert!(
+        !texts.contains(&"よろ".to_string()),
+        "the typed reading is not a prediction"
+    );
+    assert!(texts.contains(&"よろしくお願いします".to_string()));
+}
