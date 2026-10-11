@@ -144,8 +144,16 @@ impl InputMethodEngine {
         let mut candidates =
             self.build_conversion_candidates(&reading, &base, &pending, self.config.num_candidates);
 
+        // A two-part window keeps its predictions above the conversion, so
+        // Space only moves the highlight and the window keeps its contents.
+        // Its preedit showed kana, so there is no live text to carry over.
+        // An unresolved romaji tail gets the plain list: the predictions
+        // were for the reading without it.
+        let split = pending.is_empty() && self.splits_window(&reading);
+
         let seen: HashSet<&str> = candidates.iter().map(|c| c.text.as_str()).collect();
-        if !prev_suggest_text.is_empty()
+        if !split
+            && !prev_suggest_text.is_empty()
             && prev_suggest_text != reading
             && !seen.contains(prev_suggest_text.as_str())
         {
@@ -163,7 +171,11 @@ impl InputMethodEngine {
         }
 
         let mut candidate_list = self.to_conversion_candidate_list(candidates, &reading);
-        candidate_list.set_cursor(answer_row(candidate_list.candidates(), &reading));
+        if split {
+            candidate_list = self.split_list(candidate_list, &reading);
+        } else {
+            candidate_list.set_cursor(answer_row(candidate_list.candidates(), &reading));
+        }
         self.enter_conversion_state(&reading, candidate_list)
     }
 
@@ -632,21 +644,7 @@ impl InputMethodEngine {
             // way Tab and Space step forward: mozc-compatible muscle memory.
             Keysym::ISO_LEFT_TAB => self.prev_candidate(),
             Keysym::TAB | Keysym::SPACE if key.modifiers.shift_key => self.prev_candidate(),
-            // Space after Tab stepped into the predictions leaves them for the
-            // conversion of exactly what was typed.
-            Keysym::SPACE
-                if !key.modifiers.control_key
-                    && matches!(
-                        self.state,
-                        InputState::Conversion {
-                            stage: ConversionStage::Predicted,
-                            ..
-                        }
-                    ) =>
-            {
-                self.set_composing_state();
-                self.start_conversion()
-            }
+            Keysym::SPACE if !key.modifiers.control_key => self.space_in_conversion(),
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.next_candidate(),
             Keysym::UP => self.prev_candidate(),
             Keysym::PAGE_DOWN => self.next_candidate_page(),
@@ -744,6 +742,34 @@ impl InputMethodEngine {
                 EngineResult::consumed()
             }
         }
+    }
+
+    /// Space in the Conversion state: the next candidate, except on a
+    /// prediction row, where it leaves the predictions for the conversion of
+    /// exactly what was typed. A two-part list holds that conversion below
+    /// its divider, so the highlight jumps to its answer row; a
+    /// predictions-only list (a frontend that draws no divider) is replaced
+    /// by the conversion.
+    fn space_in_conversion(&mut self) -> EngineResult {
+        let Some(list) = self.state.candidates() else {
+            return self.next_candidate();
+        };
+        if let Some(divider) = list.divider() {
+            if list.cursor() >= divider {
+                return self.next_candidate();
+            }
+            let reading = self.state.reading().unwrap_or_default();
+            let row = divider + answer_row(&list.candidates()[divider..], reading);
+            return self.navigate_candidate(|c| {
+                c.set_cursor(row);
+                true
+            });
+        }
+        if self.state.stage() == ConversionStage::Predicted && self.state.filter().is_none() {
+            self.set_composing_state();
+            return self.start_conversion();
+        }
+        self.next_candidate()
     }
 
     /// Commit the highlighted candidate, then type `key` into the fresh
@@ -909,13 +935,20 @@ impl InputMethodEngine {
         // narrowed view and chew through the list top-down.
         let prev_filter = self.state.filter();
         let prev_cursor = self.state.candidates().map(|c| c.cursor()).unwrap_or(0);
+        let was_split = self
+            .state
+            .candidates()
+            .is_some_and(|c| c.divider().is_some());
 
         let candidates =
             self.build_conversion_candidates(&reading, &reading, "", self.config.num_candidates);
         if candidates.is_empty() {
             return self.cancel_conversion();
         }
-        let candidate_list = self.to_conversion_candidate_list(candidates, &reading);
+        let mut candidate_list = self.to_conversion_candidate_list(candidates, &reading);
+        if was_split {
+            candidate_list = self.split_list(candidate_list, &reading);
+        }
         let mut result = self.enter_conversion_state(&reading, candidate_list);
 
         if let Some(source) = prev_filter {

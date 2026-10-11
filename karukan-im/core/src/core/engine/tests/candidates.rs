@@ -257,7 +257,9 @@ fn split_window_holds_predictions_above_and_space_rows_below() {
     assert_eq!(&texts[1..3], ["あい", "愛"], "texts were: {texts:?}");
     assert_eq!(list.page_divider(), Some(1));
     assert!(!list.has_selection(), "Enter still commits what was typed");
-    assert!(texts.len() <= CandidateList::DEFAULT_PAGE_SIZE);
+    // The whole conversion follows, its first page on screen.
+    assert_eq!(list.current_page(), 0);
+    assert!(list.page_candidates().len() <= CandidateList::DEFAULT_PAGE_SIZE);
 }
 
 #[test]
@@ -275,6 +277,7 @@ fn split_window_without_predictions_highlights_the_answer_space_selects() {
 fn split_window_tab_enters_the_prediction_rows_and_space_converts_exactly() {
     let mut engine = split_engine();
     type_romaji(&mut engine, "ai");
+    let shown = candidate_texts(&engine.shown_suggestions);
     engine.process_key(&press_key(Keysym::TAB));
     assert_eq!(engine.state().stage(), ConversionStage::Predicted);
     let list = engine.state().candidates().unwrap();
@@ -282,20 +285,80 @@ fn split_window_tab_enters_the_prediction_rows_and_space_converts_exactly() {
     assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
     assert!(list.has_selection());
 
+    // Space leaves the prediction for the answer row below, in place.
     engine.process_key(&press_key(Keysym::SPACE));
     let list = engine.state().candidates().unwrap();
-    assert_eq!(list.divider(), None, "now the plain conversion list");
+    assert_eq!(candidate_texts(list), shown, "the same list");
     assert_eq!(list.selected_text(), Some("愛"));
 }
 
 #[test]
-fn split_window_space_leaves_the_predictions_behind() {
+fn split_window_space_keeps_the_predictions_above() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    let shown = candidate_texts(&engine.shown_suggestions);
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(candidate_texts(list), shown, "the window typing showed");
+    assert_eq!(list.divider(), Some(1));
+    assert_eq!(list.cursor(), 2, "past the prediction and the kana row");
+    assert_eq!(list.selected_text(), Some("愛"));
+
+    // Space walks on down the conversion rows.
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert_eq!(engine.state().candidates().unwrap().cursor(), 3);
+}
+
+#[test]
+fn split_window_wraps_to_the_kana_row_and_up_enters_the_predictions() {
     let mut engine = split_engine();
     type_romaji(&mut engine, "ai");
     engine.process_key(&press_key(Keysym::SPACE));
+    let len = engine.state().candidates().unwrap().len();
+
+    // Stepping on past the last row returns to the conversion's first row,
+    // never to a prediction.
+    for _ in 2..len {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
     let list = engine.state().candidates().unwrap();
-    assert_eq!(list.divider(), None);
-    assert_eq!(list.selected_text(), Some("愛"));
+    assert_eq!(list.cursor(), 1);
+    assert_eq!(list.selected_text(), Some("あい"));
+
+    // Only stepping back up reaches the prediction.
+    engine.process_key(&press_key(Keysym::UP));
+    assert_eq!(
+        engine.state().candidates().unwrap().selected_text(),
+        Some("挨拶")
+    );
+}
+
+#[test]
+fn split_window_stays_in_two_parts_after_a_history_delete() {
+    // 「挨拶」 is both learned and in the dictionary: deleting the history
+    // entry rebuilds the list, and the dictionary's copy keeps the row.
+    let mut engine = split_engine();
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("あいさつ", "挨拶");
+    engine.learning = Some(cache);
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::TAB));
+    assert!(
+        engine
+            .state()
+            .candidates()
+            .unwrap()
+            .selected()
+            .unwrap()
+            .is_deletable()
+    );
+
+    engine.process_key(&press_ctrl(Keysym::BACKSPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.divider(), Some(1));
+    assert_eq!(list.selected_text(), Some("挨拶"));
+    assert!(!list.selected().unwrap().is_deletable());
 }
 
 #[test]
@@ -394,8 +457,9 @@ fn down_while_typing_enters_the_window_like_tab() {
     type_romaji(&mut engine, "okasikute");
     engine.process_key(&press_key(Keysym::DOWN));
     let list = engine.state().candidates().expect("conversion state");
-    assert_eq!(list.divider(), None);
+    assert_eq!(list.divider(), Some(0), "no prediction rows");
     assert_eq!(list.candidates()[0].text, "おかしくて");
+    assert!(list.has_selection());
 }
 
 #[test]
@@ -404,17 +468,20 @@ fn up_while_typing_enters_the_window_from_the_bottom() {
     type_romaji(&mut engine, "ai");
     let shown = candidate_texts(&engine.shown_suggestions);
 
+    // The last row on screen: the list runs on to further pages.
+    let last_in_view = shown.len().min(CandidateList::DEFAULT_PAGE_SIZE) - 1;
+
     let result = engine.process_key(&press_key(Keysym::UP));
     assert!(result.consumed);
     let list = engine.state().candidates().expect("conversion state");
     assert_eq!(candidate_texts(list), shown, "the window on screen, as is");
-    assert_eq!(list.selected_text(), shown.last().map(String::as_str));
+    assert_eq!(list.cursor(), last_in_view);
     assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
 
     // And on up from there, like any candidate list.
     engine.process_key(&press_key(Keysym::UP));
     let list = engine.state().candidates().unwrap();
-    assert_eq!(list.cursor(), shown.len() - 2);
+    assert_eq!(list.cursor(), last_in_view - 1);
 }
 
 #[test]

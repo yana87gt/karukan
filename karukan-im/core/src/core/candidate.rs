@@ -157,7 +157,17 @@ impl CandidateList {
     /// Show the list with no row highlighted until the cursor moves.
     pub fn with_no_selection(mut self) -> Self {
         self.unselected = true;
+        self.cursor = 0;
         self
+    }
+
+    /// The row a forward wrap lands on: the head of the second section when
+    /// the list has two. Stepping on past the end then returns to the
+    /// conversion rows, and only stepping back up enters the predictions.
+    fn wrap_start(&self) -> usize {
+        self.divider
+            .filter(|d| *d < self.candidates.len() && *d < self.page_size)
+            .unwrap_or(0)
     }
 
     /// Whether a row is selected (false for a list shown without highlight).
@@ -280,7 +290,7 @@ impl CandidateList {
             true
         } else if !self.candidates.is_empty() {
             // Wrap to beginning
-            self.cursor = 0;
+            self.cursor = self.wrap_start();
             true
         } else {
             false
@@ -315,7 +325,7 @@ impl CandidateList {
             true
         } else {
             // Wrap to first page
-            self.cursor = 0;
+            self.cursor = self.wrap_start();
             true
         }
     }
@@ -328,8 +338,11 @@ impl CandidateList {
         }
 
         let current_page = self.current_page();
-        if current_page > 0 {
+        if current_page > 1 {
             self.cursor = (current_page - 1) * self.page_size;
+            true
+        } else if current_page == 1 {
+            self.cursor = self.wrap_start();
             true
         } else {
             // Wrap to last page
@@ -419,6 +432,37 @@ mod tests {
         // Wrap to first page
         candidates.next_page();
         assert_eq!(candidates.current_page(), 0);
+    }
+
+    #[test]
+    fn test_two_part_list_wraps_to_its_second_section() {
+        // 2 predictions, then 12 conversions: pages of 9 and 5.
+        let items: Vec<_> = (1..=14).map(|i| format!("item{}", i)).collect();
+        let mut candidates = CandidateList::from_strings(items).with_divider(2);
+
+        // Past the end: back to the first conversion, not a prediction.
+        candidates.set_cursor(13);
+        candidates.move_next();
+        assert_eq!(candidates.cursor(), 2);
+
+        // Stepping back up is what enters the predictions.
+        candidates.move_prev();
+        assert_eq!(candidates.cursor(), 1);
+
+        // Paging onto the first page lands below the divider too.
+        candidates.set_cursor(13);
+        candidates.next_page();
+        assert_eq!(candidates.cursor(), 2);
+        candidates.next_page();
+        assert_eq!(candidates.cursor(), 9);
+        candidates.prev_page();
+        assert_eq!(candidates.cursor(), 2);
+
+        // The divider is drawn on the page it falls on only.
+        assert_eq!(candidates.page_divider(), Some(2));
+        candidates.next_page();
+        assert_eq!(candidates.page_divider(), None);
+        assert_eq!(candidates.page_row_numbered(3), Some(3));
     }
 
     #[test]
