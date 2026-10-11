@@ -256,9 +256,27 @@ impl InputMethodEngine {
         {
             return self.start_conversion();
         }
+        self.enter_shown_suggestions(0)
+    }
+
+    /// ↑ while typing: step into the window from the bottom, its last row
+    /// selected — the mirror of ↓, which enters from the top. Without a
+    /// window to step into (see [`Self::select_shown_suggestions`]) the key
+    /// is consumed and does nothing, rather than left for the application
+    /// to act on mid-composition.
+    fn select_last_shown_suggestion(&mut self) -> EngineResult {
+        if self.shown_suggestions.is_empty() || !self.input_buf.pending().is_empty() {
+            return EngineResult::consumed();
+        }
+        self.enter_shown_suggestions(self.shown_suggestions.len() - 1)
+    }
+
+    /// Enter the Conversion state on the list that is showing, `cursor`
+    /// selected.
+    fn enter_shown_suggestions(&mut self, cursor: usize) -> EngineResult {
         let reading = self.input_buf.settled_reading(&self.converters.romaji);
         let mut list = self.shown_suggestions.clone();
-        list.set_cursor(0);
+        list.set_cursor(cursor);
         self.live.shown = false;
         self.enter_conversion_state_staged(&reading, list, ConversionStage::Predicted)
     }
@@ -452,6 +470,7 @@ impl InputMethodEngine {
             // where Space runs a conversion.
             Keysym::TAB => self.select_shown_suggestions(),
             Keysym::SPACE | Keysym::DOWN => self.start_conversion(),
+            Keysym::UP => self.select_last_shown_suggestion(),
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),
             Keysym::HOME => self.move_caret_home(),

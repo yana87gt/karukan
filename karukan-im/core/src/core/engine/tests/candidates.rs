@@ -373,6 +373,50 @@ fn split_window_numbers_each_part_from_one() {
 }
 
 #[test]
+fn up_while_typing_enters_the_window_from_the_bottom() {
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "ai");
+    let shown = candidate_texts(&engine.shown_suggestions);
+
+    let result = engine.process_key(&press_key(Keysym::UP));
+    assert!(result.consumed);
+    let list = engine.state().candidates().expect("conversion state");
+    assert_eq!(candidate_texts(list), shown, "the window on screen, as is");
+    assert_eq!(list.selected_text(), shown.last().map(String::as_str));
+    assert_eq!(list.divider(), Some(1), "the window keeps its two parts");
+
+    // And on up from there, like any candidate list.
+    engine.process_key(&press_key(Keysym::UP));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.cursor(), shown.len() - 2);
+}
+
+#[test]
+fn up_while_typing_is_consumed_without_a_window_to_enter() {
+    // No window to step into: the key is still consumed, and the
+    // composition is left as it was.
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        candidate_window: crate::config::settings::CandidateWindow::Conversion,
+        ..EngineConfig::default()
+    });
+    type_romaji(&mut engine, "ai");
+    assert!(engine.shown_suggestions.is_empty());
+
+    let result = engine.process_key(&press_key(Keysym::UP));
+    assert!(result.consumed);
+    assert!(result.actions.is_empty());
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "あい");
+
+    // An unresolved romaji tail: the window was built without it.
+    let mut engine = split_engine();
+    type_romaji(&mut engine, "aik");
+    let result = engine.process_key(&press_key(Keysym::UP));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+}
+
+#[test]
 fn split_window_enter_commits_the_typed_reading_and_tab_walks_on_below() {
     let mut engine = split_engine();
     type_romaji(&mut engine, "ai");
