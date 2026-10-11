@@ -27,6 +27,7 @@ fn conversion_texts(reading: &str) -> Vec<String> {
     let mut engine = composing_engine(reading);
     engine
         .build_conversion_candidates(reading, reading, "", 9)
+        .candidates
         .into_iter()
         .map(|c| c.text)
         .collect()
@@ -130,6 +131,7 @@ fn rewriter_does_not_expand_dictionary_candidates() {
 
     let texts: Vec<String> = engine
         .build_conversion_candidates("てすと", "てすと", "", 9)
+        .candidates
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -146,7 +148,9 @@ fn rewriter_candidates_only_derive_from_user_input() {
     // rewrite of the typed reading. Guards against future regressions where
     // somebody re-introduces rewriting over dictionary/model/fallback entries.
     let mut engine = composing_engine("あ");
-    let candidates = engine.build_conversion_candidates("あ", "あ", "", 9);
+    let candidates = engine
+        .build_conversion_candidates("あ", "あ", "", 9)
+        .candidates;
 
     let allowed: HashSet<String> = RewriterChain::default_chain()
         .rewrite_all(&["あ".to_string()])
@@ -182,7 +186,9 @@ fn alphabet_input_emits_width_and_case_variants() {
 #[test]
 fn alphabet_variants_carry_width_case_descriptions() {
     let mut engine = composing_engine("abc");
-    let candidates = engine.build_conversion_candidates("abc", "abc", "", 9);
+    let candidates = engine
+        .build_conversion_candidates("abc", "abc", "", 9)
+        .candidates;
     let upper = candidates.iter().find(|c| c.text == "ABC").unwrap();
     let full_lower = candidates.iter().find(|c| c.text == "ａｂｃ").unwrap();
     let full_upper = candidates.iter().find(|c| c.text == "ＡＢＣ").unwrap();
@@ -226,7 +232,9 @@ fn typed_symbol_itself_is_annotated_via_global_lookup() {
     // (not from the rewriter). The post-pass enrichment should still attach
     // mozc's description "始めかぎ括弧" because `「` is a known symbol.
     let mut engine = composing_engine("「");
-    let candidates = engine.build_conversion_candidates("「", "「", "", 9);
+    let candidates = engine
+        .build_conversion_candidates("「", "「", "", 9)
+        .candidates;
 
     let kagi = candidates.iter().find(|c| c.text == "「").unwrap();
     assert_eq!(
@@ -252,7 +260,9 @@ fn katakana_variants_carry_width_form_description() {
     // half-width katakana → `[半]カタカナ`. The hiragana fallback also picks
     // up `[全]ひらがな` since hiragana is intrinsically full-width.
     let mut engine = composing_engine("あ");
-    let candidates = engine.build_conversion_candidates("あ", "あ", "", 9);
+    let candidates = engine
+        .build_conversion_candidates("あ", "あ", "", 9)
+        .candidates;
 
     let hira = candidates.iter().find(|c| c.text == "あ").unwrap();
     assert_eq!(

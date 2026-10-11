@@ -10,6 +10,7 @@ fn build_candidates_include_learning() {
 
     let texts: Vec<String> = engine
         .build_conversion_candidates("あい", "あい", "", 9)
+        .candidates
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -340,6 +341,7 @@ fn prefix_learning_is_offered_below_the_typed_reading() {
 
     let texts: Vec<String> = engine
         .build_conversion_candidates("あい", "あい", "", 9)
+        .candidates
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -365,6 +367,7 @@ fn exact_learning_still_heads_the_list_ahead_of_a_prediction() {
 
     let texts: Vec<String> = engine
         .build_conversion_candidates("あい", "あい", "", 9)
+        .candidates
         .into_iter()
         .map(|c| c.text)
         .collect();

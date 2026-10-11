@@ -65,17 +65,19 @@ pub(super) fn partition_by_extension<T>(
     (exact, predictive)
 }
 
-/// The row a conversion starts on. The list leads with the reading in kana
-/// (the Mac's first row), but asking for a conversion wants an answer, so
-/// selection starts on the row after it. A kana row out of the learning
-/// history is skipped like any other: Enter on a composition records the
-/// kana as typed, so nearly every reading has one, and staying on it would
-/// make the first Space convert to what was already there.
-pub(super) fn answer_row(candidates: &[Candidate], reading: &str) -> usize {
-    let skips_kana = candidates.len() > 1
-        && karukan_engine::contains_kana(reading)
-        && candidates.first().is_some_and(|c| c.text == reading);
-    usize::from(skips_kana)
+/// What [`InputMethodEngine::build_conversion_candidates`] builds.
+pub(super) struct MixedCandidates {
+    /// The mixed list, the reading in kana first.
+    pub(super) candidates: Vec<AnnotatedCandidate>,
+    /// The row a conversion starts on. The list leads with the reading in
+    /// kana (the Mac's first row), and selection starts on the row after
+    /// it, unless the model's own top-1 is that kana: given the text around
+    /// the caret it judged the reading best left unconverted (そのまま), and
+    /// that is the answer. A kana row out of the learning history does not
+    /// hold the selection — Enter on a composition records the kana as
+    /// typed, so nearly every reading has one, and staying on it would make
+    /// the first Space convert to what was already there.
+    pub(super) answer: usize,
 }
 
 /// Helper for building a deduplicated list of conversion candidates.
@@ -141,8 +143,10 @@ impl InputMethodEngine {
         }
 
         // Get candidates from kanji converter (use full num_candidates for explicit conversion)
-        let mut candidates =
-            self.build_conversion_candidates(&reading, &base, &pending, self.config.num_candidates);
+        let MixedCandidates {
+            mut candidates,
+            mut answer,
+        } = self.build_conversion_candidates(&reading, &base, &pending, self.config.num_candidates);
 
         // A two-part window keeps its predictions above the conversion, so
         // Space only moves the highlight and the window keeps its contents.
@@ -161,6 +165,7 @@ impl InputMethodEngine {
                 0,
                 AnnotatedCandidate::new(prev_suggest_text, CandidateSource::Model),
             );
+            answer = 0;
         }
 
         if candidates.is_empty() {
@@ -170,28 +175,30 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        let mut candidate_list = self.to_conversion_candidate_list(candidates, &reading);
+        let mut candidate_list =
+            self.to_conversion_candidate_list(MixedCandidates { candidates, answer }, &reading);
         if split {
             candidate_list = self.split_list(candidate_list, &reading);
-        } else {
-            candidate_list.set_cursor(answer_row(candidate_list.candidates(), &reading));
         }
         self.enter_conversion_state(&reading, candidate_list)
     }
 
     /// Map builder output to the public [`CandidateList`] shown in the
-    /// conversion window, settled at the configured width.
+    /// conversion window, settled at the configured width, the answer row
+    /// selected.
     pub(super) fn to_conversion_candidate_list(
         &self,
-        candidates: Vec<AnnotatedCandidate>,
+        mixed: MixedCandidates,
         reading: &str,
     ) -> CandidateList {
         self.settle_candidates(
-            candidates
+            mixed
+                .candidates
                 .into_iter()
                 .map(|ac| ac.into_candidate(reading))
                 .collect(),
         )
+        .with_answer(mixed.answer)
     }
 
     /// Transition to Conversion state with the given reading and candidate list.
@@ -350,12 +357,16 @@ impl InputMethodEngine {
         base: &str,
         pending: &str,
         num_candidates: usize,
-    ) -> Vec<AnnotatedCandidate> {
+    ) -> MixedCandidates {
         // No converter (still loading in the background, or loading failed)
         // just means no model candidates: symbol-only and early keystrokes
         // still get dictionary/rewriter/fallback candidates. Loading here
         // synchronously would block the key-event thread on the download.
         let candidates = self.model_candidates(reading, num_candidates);
+        // The head is the model's top-1 for the whole reading.
+        let model_keeps_kana = candidates
+            .first()
+            .is_some_and(|top| self.settle_text(top) == reading);
 
         let hiragana = reading.to_string();
         let katakana = karukan_engine::hiragana_to_katakana(reading);
@@ -484,8 +495,9 @@ impl InputMethodEngine {
         }
 
         // The reading in kana leads the list, as the first row of the Mac's
-        // window. Selection starts past it (`answer_row`), so it is
-        // reachable by stepping back and by Ctrl+1 rather than in the way.
+        // window. Selection starts past it unless the model kept the kana
+        // (`MixedCandidates::answer`), so it is reachable by stepping back
+        // and by Ctrl+1 rather than in the way.
         let mut candidates = builder.into_candidates();
         if karukan_engine::contains_kana(reading)
             && let Some(at) = candidates.iter().position(|c| c.text == reading)
@@ -494,7 +506,14 @@ impl InputMethodEngine {
             let kana = candidates.remove(at);
             candidates.insert(0, kana);
         }
-        candidates
+        let skips_kana = !model_keeps_kana
+            && candidates.len() > 1
+            && karukan_engine::contains_kana(reading)
+            && candidates.first().is_some_and(|c| c.text == reading);
+        MixedCandidates {
+            candidates,
+            answer: usize::from(skips_kana),
+        }
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -758,8 +777,7 @@ impl InputMethodEngine {
             if list.cursor() >= divider {
                 return self.next_candidate();
             }
-            let reading = self.state.reading().unwrap_or_default();
-            let row = divider + answer_row(&list.candidates()[divider..], reading);
+            let row = list.answer();
             return self.navigate_candidate(|c| {
                 c.set_cursor(row);
                 true
@@ -942,7 +960,7 @@ impl InputMethodEngine {
 
         let candidates =
             self.build_conversion_candidates(&reading, &reading, "", self.config.num_candidates);
-        if candidates.is_empty() {
+        if candidates.candidates.is_empty() {
             return self.cancel_conversion();
         }
         let mut candidate_list = self.to_conversion_candidate_list(candidates, &reading);

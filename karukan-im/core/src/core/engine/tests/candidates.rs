@@ -204,17 +204,59 @@ fn tab_converts_when_no_window_is_showing() {
 }
 
 #[test]
-fn space_starts_on_the_converted_answer_when_the_top_one_stays_kana() {
-    // Top-1 leaves 「おかしくて」 in kana, the beam also has 「可笑しくて」.
-    // Space is a request to convert, so the kanji is what gets selected.
+fn space_stays_on_the_kana_when_the_model_keeps_it() {
+    // Top-1 leaves 「おかしくて」 in kana: given the context the model judged
+    // it best unconverted, so that is where Space starts. The beam's
+    // 「可笑しくて」 is the next row.
     let mut engine = live_off_engine();
     seed_model_cache(&mut engine, "オカシクテ", "", &["おかしくて", "可笑しくて"]);
     type_romaji(&mut engine, "okasikute");
     engine.process_key(&press_key(Keysym::SPACE));
 
     let list = engine.state().candidates().unwrap();
-    assert_eq!(list.candidates()[0].text, "おかしくて");
-    assert_eq!(list.selected_text(), Some("可笑しくて"));
+    assert_eq!(list.cursor(), 0);
+    assert_eq!(list.selected_text(), Some("おかしくて"));
+    assert_eq!(list.candidates()[1].text, "可笑しくて");
+}
+
+#[test]
+fn a_learned_kana_does_not_hold_space_when_the_model_converts() {
+    // 「あい」 is in the history as typed (an Enter on the composition), but
+    // the model's top-1 is 「愛」: the model decides, not the history.
+    let mut engine = live_off_engine();
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("あい", "あい");
+    engine.learning = Some(cache);
+    seed_model_cache(&mut engine, "アイ", "", &["愛", "あい"]);
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.candidates()[0].text, "あい");
+    assert_eq!(list.selected_text(), Some("愛"));
+}
+
+#[test]
+fn split_window_space_stays_on_the_kana_when_the_model_keeps_it() {
+    let mut engine = split_engine();
+    seed_model_cache(&mut engine, "アイ", "", &["あい", "愛"]);
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.divider(), Some(1));
+    assert_eq!(list.cursor(), 1, "the kana row, the lower part's first");
+    assert_eq!(list.selected_text(), Some("あい"));
+
+    // From a prediction row Space lands on that same row.
+    let mut engine = split_engine();
+    seed_model_cache(&mut engine, "アイ", "", &["あい", "愛"]);
+    type_romaji(&mut engine, "ai");
+    engine.process_key(&press_key(Keysym::TAB));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert_eq!(
+        engine.state().candidates().unwrap().selected_text(),
+        Some("あい")
+    );
 }
 
 #[test]

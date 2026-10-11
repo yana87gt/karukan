@@ -225,11 +225,10 @@ impl InputMethodEngine {
             .cloned()
             .collect();
         let divider = predictions.len();
-        let answer = divider + super::conversion::answer_row(&rows, reading);
-        let mut list =
-            CandidateList::new(predictions.into_iter().chain(rows).collect()).with_divider(divider);
-        list.set_cursor(answer);
-        list
+        let answer = divider + conversions.answer();
+        CandidateList::new(predictions.into_iter().chain(rows).collect())
+            .with_divider(divider)
+            .with_answer(answer)
     }
 
     /// The two-part window while typing: [`Self::split_list`], its first

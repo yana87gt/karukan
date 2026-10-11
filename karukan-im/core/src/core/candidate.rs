@@ -131,6 +131,9 @@ pub struct CandidateList {
     /// The window is shown with no row highlighted: nothing is selected yet,
     /// so Enter still commits the composition. Any cursor move selects.
     unselected: bool,
+    /// The row a conversion starts on, kept with the list so that leaving
+    /// the predictions for the conversion lands where Space would have.
+    answer: usize,
 }
 
 impl CandidateList {
@@ -145,7 +148,20 @@ impl CandidateList {
             page_size: Self::DEFAULT_PAGE_SIZE,
             divider: None,
             unselected: false,
+            answer: 0,
         }
+    }
+
+    /// Record the row a conversion starts on and select it.
+    pub fn with_answer(mut self, answer: usize) -> Self {
+        self.set_cursor(answer);
+        self.answer = self.cursor;
+        self
+    }
+
+    /// The row a conversion starts on (see [`Self::with_answer`]).
+    pub fn answer(&self) -> usize {
+        self.answer
     }
 
     /// Mark where the second section starts (see [`Self::divider`]).
