@@ -138,6 +138,10 @@ impl LearningCache {
 
     /// Prefix-match lookup: returns `(reading, surface, score)` triples
     /// for all readings that start with `prefix`, sorted by score descending.
+    /// Equal scores are common (the score steps by whole days and by
+    /// frequency), so they fall back to the reading: left to the map's
+    /// iteration order, which rows make a capped list would change from one
+    /// launch to the next.
     pub fn prefix_lookup(&self, prefix: &str) -> Vec<(String, String, f64)> {
         let now = now_unix();
         let mut results: Vec<(String, String, f64)> = Vec::new();
@@ -148,7 +152,7 @@ impl LearningCache {
                 }
             }
         }
-        results.sort_by(|a, b| b.2.total_cmp(&a.2));
+        results.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
         results
     }
 
@@ -256,8 +260,10 @@ impl LearningCache {
                 all.push((reading.clone(), i, score(entry, now)));
             }
         }
-        // Sort by score ascending (lowest first = eviction candidates)
-        all.sort_by(|a, b| a.2.total_cmp(&b.2));
+        // Sort by score ascending (lowest first = eviction candidates),
+        // equal scores by reading so the choice never depends on the map's
+        // iteration order
+        all.sort_by(|a, b| a.2.total_cmp(&b.2).then_with(|| a.0.cmp(&b.0)));
 
         let to_remove = total - self.max_entries;
         // Collect indices to remove, grouped by reading
@@ -362,6 +368,38 @@ mod tests {
     }
 
     #[test]
+    fn test_prefix_lookup_orders_equal_scores_by_reading() {
+        // Recorded together, once each: every score is the same. Each cache
+        // is its own HashMap with its own iteration order.
+        let readings = ["よろず", "よろしく", "よろこび", "よろしくたのむ"];
+        for _ in 0..20 {
+            let mut cache = cache_with(100);
+            for reading in readings {
+                cache.record(reading, reading);
+            }
+            let order: Vec<String> = cache
+                .prefix_lookup("よろ")
+                .into_iter()
+                .map(|(reading, _, _)| reading)
+                .collect();
+            assert_eq!(order, ["よろこび", "よろしく", "よろしくたのむ", "よろず"]);
+        }
+    }
+
+    #[test]
+    fn test_prefix_lookup_keeps_a_readings_surfaces_in_recorded_order() {
+        let mut cache = cache_with(100);
+        cache.record("きょう", "京");
+        cache.record("きょう", "今日");
+        let surfaces: Vec<String> = cache
+            .prefix_lookup("きょ")
+            .into_iter()
+            .map(|(_, surface, _)| surface)
+            .collect();
+        assert_eq!(surfaces, ["京", "今日"], "as `lookup` orders them");
+    }
+
+    #[test]
     fn test_prefix_lookup_no_match() {
         let mut cache = cache_with(100);
         cache.record("きょう", "今日");
@@ -426,6 +464,26 @@ mod tests {
 
         // After eviction, should be at most 3 entries
         assert!(cache.entry_count() <= 3);
+    }
+
+    #[test]
+    fn test_eviction_of_equal_scores_is_the_same_every_time() {
+        for _ in 0..20 {
+            let mut cache = cache_with(2);
+            for reading in ["d", "b", "a", "c"] {
+                cache.record(reading, reading);
+            }
+            let file = NamedTempFile::new().unwrap();
+            cache.save(file.path()).unwrap();
+
+            let mut kept: Vec<String> = cache
+                .prefix_lookup("")
+                .into_iter()
+                .map(|(reading, _, _)| reading)
+                .collect();
+            kept.sort();
+            assert_eq!(kept, ["c", "d"]);
+        }
     }
 
     #[test]
