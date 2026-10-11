@@ -90,8 +90,24 @@ class CandidateWindowController {
         let cursor: Int
         let page: Int
         let totalPages: Int
+        /// Row index where the second section starts; nil for one section.
+        let divider: Int?
     }
     private var pageState: PageState?
+
+    private static let headerFontSize: CGFloat = 10
+    private static let predictionHeader = "TAB"
+    private static let conversionHeader = "スペース"
+
+    /// Height of a section header row. Two are reserved on every appearance
+    /// (the one above the first section, the one between the sections), shown
+    /// or not, so the panel does not change height when the typing window
+    /// gains or loses its second section.
+    private static let headerRowHeight: CGFloat = {
+        let label = NSTextField(labelWithString: "TAB")
+        label.font = NSFont.systemFont(ofSize: headerFontSize)
+        return ceil(label.intrinsicContentSize.height) + 3
+    }()
 
     /// Height of one candidate row, measured from the font the row uses so
     /// an empty slot occupies the same space as a filled one.
@@ -151,11 +167,16 @@ class CandidateWindowController {
     /// caller can skip its (synchronous, per-keystroke) client IPC while
     /// the panel is already on screen, since the composition anchor
     /// doesn't move mid-composition.
+    ///
+    /// `divider` splits the rows in two parts (the typing window: predictions
+    /// above, the conversions Space opens on below).
     func show(
-        candidates: [CandidateItem], cursor: Int, page: Int, totalPages: Int, cursorRect: NSRect?
+        candidates: [CandidateItem], cursor: Int, page: Int, totalPages: Int,
+        divider: Int? = nil, cursorRect: NSRect?
     ) {
         pageState = PageState(
-            candidates: candidates, cursor: cursor, page: page, totalPages: totalPages)
+            candidates: candidates, cursor: cursor, page: page, totalPages: totalPages,
+            divider: divider)
         render(cursorRect: cursorRect)
     }
 
@@ -190,14 +211,31 @@ class CandidateWindowController {
             return
         }
 
+        // Headers name the keys of a two-part window: TAB steps into the first
+        // part, Space converts into the second. With no first part the
+        // single list is Space's.
+        let split = (state.divider ?? 0) > 0
+        if split {
+            addHeaderRow(Self.predictionHeader, rule: false)
+        } else if state.divider == 0 {
+            addHeaderRow(Self.conversionHeader, rule: false)
+        } else {
+            addHeaderRow(nil, rule: false)
+        }
         let slots = max(state.candidates.count, Self.rowCapacity)
         for index in 0..<slots {
+            if split, index == state.divider {
+                addHeaderRow(Self.conversionHeader, rule: true)
+            }
             if index < state.candidates.count {
                 addCandidateRow(
                     state.candidates[index], number: index + 1, selected: index == state.cursor)
             } else {
                 addBlankRow()
             }
+        }
+        if !split {
+            addHeaderRow(nil, rule: false)
         }
         let pageText = state.totalPages > 1 ? "[\(state.page + 1)/\(state.totalPages)]" : ""
         addFooterLabel(pageText)
@@ -255,6 +293,45 @@ class CandidateWindowController {
             label.centerYAnchor.constraint(equalTo: row.centerYAnchor),
         ])
         stackView.addArrangedSubview(row)
+        rowViews.append(row)
+    }
+
+    /// A small grey section header, optionally with a rule above it (the
+    /// divider between the two parts). A nil `text` leaves the row blank but
+    /// still takes its height.
+    private func addHeaderRow(_ text: String?, rule: Bool) {
+        let row = NSView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: Self.headerRowHeight).isActive = true
+        if rule {
+            let line = NSBox()
+            line.boxType = .separator
+            line.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(line)
+            NSLayoutConstraint.activate([
+                line.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                line.trailingAnchor.constraint(equalTo: row.trailingAnchor),
+                line.topAnchor.constraint(equalTo: row.topAnchor),
+            ])
+        }
+        if let text {
+            let label = NSTextField(labelWithString: text)
+            label.font = NSFont.systemFont(ofSize: Self.headerFontSize)
+            label.textColor = NSColor.tertiaryLabelColor
+            label.translatesAutoresizingMaskIntoConstraints = false
+            row.addSubview(label)
+            NSLayoutConstraint.activate([
+                label.leadingAnchor.constraint(equalTo: row.leadingAnchor),
+                label.bottomAnchor.constraint(equalTo: row.bottomAnchor),
+            ])
+        }
+        stackView.addArrangedSubview(row)
+        // Candidate rows set the panel width; the rule just stretches to it.
+        if rule {
+            row.trailingAnchor.constraint(
+                equalTo: stackView.trailingAnchor, constant: -stackView.edgeInsets.right
+            ).isActive = true
+        }
         rowViews.append(row)
     }
 

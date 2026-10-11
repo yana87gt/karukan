@@ -158,6 +158,25 @@ final class CandidateWindowControllerTests: XCTestCase {
         window.hide()
     }
 
+    func testTwoPartWindowKeepsThePanelHeight() throws {
+        try skipWithoutScreen()
+        let window = CandidateWindowController()
+        let caret = NSRect(x: 200, y: 500, width: 4, height: 18)
+        let items = (1...6).map { CandidateItem(text: "候補\($0)", description: nil) }
+        window.show(
+            candidates: items, cursor: 0, page: 0, totalPages: 1, divider: nil, cursorRect: caret)
+        let single = window.testingFrame
+        window.show(
+            candidates: items, cursor: 0, page: 0, totalPages: 1, divider: 2, cursorRect: nil)
+        let split = window.testingFrame
+        window.show(
+            candidates: items, cursor: 1, page: 0, totalPages: 1, divider: 0, cursorRect: nil)
+        let noPredictions = window.testingFrame
+        XCTAssertEqual(single.height, split.height, accuracy: 0.5)
+        XCTAssertEqual(single.height, noPredictions.height, accuracy: 0.5)
+        XCTAssertEqual(single.origin.y, split.origin.y, accuracy: 0.5)
+    }
+
     private func skipWithoutScreen() throws {
         try XCTSkipIf(NSScreen.main == nil, "no screen to place the panel on")
     }

@@ -22,13 +22,24 @@ final class EngineProtocolTests: XCTestCase {
         XCTAssertEqual(attributes[0].style, "underline")
     }
 
+    func testDecodeShowCandidatesDivider() throws {
+        let json = """
+            {"consumed":true,"actions":[{"candidates":[{"text":"ライブエリア"},{"text":"らいぶ"}],"cursor":0,"divider":1,"page":0,"total_pages":1,"type":"show_candidates"}],"conversion_ms":1,"process_key_ms":2}
+            """
+        let result = try decodeKeyResult(json)
+        guard case .showCandidates(_, _, _, _, let divider) = result.actions[0] else {
+            return XCTFail("expected show_candidates")
+        }
+        XCTAssertEqual(divider, 1)
+    }
+
     func testDecodeShowCandidates() throws {
         let json = """
             {"consumed":true,"actions":[{"candidates":[{"description":"[全]カタカナ","text":"カ"},{"text":"か"}],"cursor":0,"page":0,"total_pages":3,"type":"show_candidates"}],"conversion_ms":11,"process_key_ms":42}
             """
         let result = try decodeKeyResult(json)
         guard
-            case .showCandidates(let candidates, let cursor, let page, let totalPages) =
+            case .showCandidates(let candidates, let cursor, let page, let totalPages, let divider) =
                 result.actions[0]
         else {
             return XCTFail("expected show_candidates")
@@ -40,6 +51,7 @@ final class EngineProtocolTests: XCTestCase {
         XCTAssertEqual(cursor, 0)
         XCTAssertEqual(page, 0)
         XCTAssertEqual(totalPages, 3)
+        XCTAssertNil(divider)
         XCTAssertEqual(result.conversionMs, 11)
     }
 
