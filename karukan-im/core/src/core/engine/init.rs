@@ -208,11 +208,22 @@ impl InputMethodEngine {
     /// entries already on disk are loaded regardless (they can be removed
     /// with Ctrl+Delete or by eviction).
     pub fn init_learning_cache(&mut self, enabled: bool, config: LearningConfig) {
+        self.init_learning_cache_from(Settings::learning_file(), enabled, config);
+    }
+
+    /// [`Self::init_learning_cache`] with the history file named by the
+    /// caller, so a test never reads the user's own.
+    pub(super) fn init_learning_cache_from(
+        &mut self,
+        path: Option<std::path::PathBuf>,
+        enabled: bool,
+        config: LearningConfig,
+    ) {
         if !enabled || self.learning.is_some() {
             return;
         }
 
-        let cache = match Settings::learning_file() {
+        let cache = match path {
             Some(path) if path.exists() => match LearningCache::load(&path, config) {
                 Ok(cache) => {
                     debug!(

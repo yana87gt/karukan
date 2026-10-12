@@ -168,8 +168,11 @@ fn init_learning_cache_applies_configured_surface_cap() {
     // Guards the config→cache seam: if init_learning_cache stops applying
     // max_surface_chars, the 6-char surface (over the configured 5, under
     // the default 50) gets recorded and this fails.
+    // A history file of the test's own: the user's must not be read.
+    let dir = tempfile::tempdir().unwrap();
     let mut engine = InputMethodEngine::new();
-    engine.init_learning_cache(
+    engine.init_learning_cache_from(
+        Some(dir.path().join("learning.tsv")),
         true,
         LearningConfig {
             max_entries: 10_000,
