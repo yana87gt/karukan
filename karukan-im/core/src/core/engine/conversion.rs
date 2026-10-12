@@ -12,6 +12,14 @@ use super::*;
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
 
+/// How many times likelier the model must find a learned candidate than
+/// the one a rank above it in the history before the two swap places.
+/// Measured on the shipped models for はいしゃ: 「バイクと事故ったので」
+/// puts 廃車 at 81% against 歯医者 at 12% (×7), which has to win; with no
+/// context they sit at 37% and 29% (×1.3), which has to leave the history
+/// alone.
+const CONTEXT_ODDS_PER_RANK: f32 = 3.0;
+
 /// Max predictive (prefix-extending) dictionary candidates in the
 /// composing suggestion list. The conversion list is uncapped — the full
 /// ranked set goes into the paged candidate window.
@@ -63,6 +71,90 @@ pub(super) fn partition_by_extension<T>(
         }
     }
     (exact, predictive)
+}
+
+/// Order the candidates learned for one reading by what the user corrected
+/// in this context, then by the history and the model together. `learned`
+/// arrives in history order; `scores` are the model's candidates for the
+/// same reading with their log-probabilities; `remembered` is how well a
+/// candidate's remembered contexts fit the text now left of the caret
+/// ([`LearningCache::context_match`]).
+///
+/// The history ranks by recency and frequency and never sees the text
+/// around the caret, so once two homophones are both learned (歯医者, 廃車)
+/// the one picked last would head every later conversion whatever the
+/// sentence says. Two things do see it, in this order:
+///
+/// 1. A candidate the user once picked over the first one offered, with
+///    this text before it, comes first — the closest fit when several
+///    were. Not weighed against the model: the model is what was
+///    corrected, and in the same context it is as sure of its answer as it
+///    was then (「学校」 before にはいってるの is 97% に入ってるの every
+///    time).
+/// 2. For the rest, the model's log-probability minus a handicap per
+///    history rank, so a candidate moves up only when the model finds it
+///    [`CONTEXT_ODDS_PER_RANK`] times likelier per rank it passes: a
+///    confident model reorders, a model that is unsure leaves the history
+///    as it was.
+///
+/// The handicap is the rank, not the history's score, because that score
+/// cannot meet a log-probability on one scale: a pick from today outscores
+/// one from last week by about 9, where the model's whole distance from
+/// unsure to sure is 2 or 3.
+///
+/// A learned candidate the model did not return is taken to be as likely
+/// as the least likely one it did. Without scores (no model, or a greedy
+/// conversion) the handicap alone decides, which is the history's order.
+/// The reading in kana stays where it was: Enter on a composition records
+/// it, so nearly every reading has one, and the list leads with it whatever
+/// its rank.
+pub(super) fn rank_learned_by_context(
+    mut learned: Vec<Candidate>,
+    scores: &[(String, f32)],
+    reading: &str,
+    remembered: impl Fn(&str) -> Option<ContextMatch>,
+) -> Vec<Candidate> {
+    let floor = scores
+        .iter()
+        .map(|&(_, score)| score)
+        .reduce(f32::min)
+        .unwrap_or(0.0);
+    let kana = learned
+        .iter()
+        .position(|c| c.text == reading)
+        .map(|at| (at, learned.remove(at)));
+
+    let handicap = CONTEXT_ODDS_PER_RANK.ln();
+    let mut ranked: Vec<(Option<ContextMatch>, f32, Candidate)> = learned
+        .into_iter()
+        .enumerate()
+        .map(|(rank, candidate)| {
+            let log_prob = scores
+                .iter()
+                .find(|(text, _)| *text == candidate.text)
+                .map_or(floor, |&(_, score)| score);
+            (
+                remembered(&candidate.text),
+                log_prob - handicap * rank as f32,
+                candidate,
+            )
+        })
+        .collect();
+    // Stable, so equal scores keep the history's order.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.total_cmp(&a.1)));
+
+    let mut ranked: Vec<Candidate> = ranked.into_iter().map(|(_, _, c)| c).collect();
+    if let Some((at, kana)) = kana {
+        ranked.insert(at.min(ranked.len()), kana);
+    }
+    ranked
+}
+
+/// The candidate a conversion of `reading` starts on: what the user is
+/// offered first, and so what a different pick corrects.
+pub(super) struct OfferedAnswer {
+    reading: String,
+    text: String,
 }
 
 /// What [`InputMethodEngine::build_conversion_candidates`] builds.
@@ -366,7 +458,7 @@ impl InputMethodEngine {
         // The head is the model's top-1 for the whole reading.
         let model_keeps_kana = candidates
             .first()
-            .is_some_and(|top| self.settle_text(top) == reading);
+            .is_some_and(|top| self.settle_text(&top.text) == reading);
 
         let hiragana = reading.to_string();
         let katakana = karukan_engine::hiragana_to_katakana(reading);
@@ -375,10 +467,29 @@ impl InputMethodEngine {
         // whose reading runs past `reading` must not become the highlight.
         let mut builder = CandidateBuilder::new();
 
+        // The whole history, capped only after the context has had its say:
+        // the entry the sentence calls for may sit below the cap.
         let (learning_exact, learning_predictive) =
-            partition_by_extension(self.lookup_learning_candidates(reading), reading, |c| {
+            partition_by_extension(self.lookup_learning_history(reading, ""), reading, |c| {
                 c.reading.as_deref()
             });
+        // Settled like the list itself, so a score meets the learned text
+        // in the width it was committed in.
+        let scores: Vec<(String, f32)> = candidates
+            .iter()
+            .filter_map(|c| Some((self.settle_text(&c.text), c.log_prob?)))
+            .collect();
+        let context = self.truncate_context_for_api();
+        let mut learning_exact =
+            rank_learned_by_context(learning_exact, &scores, reading, |surface| {
+                self.learning
+                    .as_ref()?
+                    .context_match(reading, surface, &context)
+            });
+        learning_exact.truncate(MAX_LEARNING_CANDIDATES);
+        let learning_predictive = learning_predictive
+            .into_iter()
+            .take(MAX_LEARNING_CANDIDATES - learning_exact.len());
 
         // 1. Exact learning matches (highest priority).
         //    Force-inserted so they win against duplicate text from later sources.
@@ -427,8 +538,11 @@ impl InputMethodEngine {
                 ));
             }
         } else {
-            for text in candidates {
-                builder.push(AnnotatedCandidate::new(text, CandidateSource::Model));
+            for candidate in candidates {
+                builder.push(AnnotatedCandidate::new(
+                    candidate.text,
+                    CandidateSource::Model,
+                ));
             }
         }
 
@@ -510,10 +624,16 @@ impl InputMethodEngine {
             && candidates.len() > 1
             && karukan_engine::contains_kana(reading)
             && candidates.first().is_some_and(|c| c.text == reading);
-        MixedCandidates {
-            candidates,
-            answer: usize::from(skips_kana),
-        }
+        let answer = usize::from(skips_kana);
+        // As the list will show it: only the model's text is settled.
+        self.offered_answer = candidates.get(answer).map(|c| OfferedAnswer {
+            reading: reading.to_string(),
+            text: match c.source {
+                CandidateSource::Model => self.settle_text(&c.text),
+                _ => c.text.clone(),
+            },
+        });
+        MixedCandidates { candidates, answer }
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -890,8 +1010,43 @@ impl InputMethodEngine {
     pub(super) fn finish_conversion(&mut self, text: &str, reading: &Option<String>) {
         if let Some(reading) = reading {
             self.record_learning(reading, text);
+            self.record_context(reading, text);
         }
         self.end_composition();
+    }
+
+    /// Tell the history how the pick compares with what the conversion
+    /// offered first. A different pick is a correction, remembered with the
+    /// text left of the caret so the same text brings it back
+    /// (`rank_learned_by_context`). Taking the offered candidate only keeps
+    /// the context that put it there in use: where the first candidate is
+    /// right there is nothing to remember, and the text before a conversion
+    /// is written to disk only for a correction.
+    ///
+    /// Nothing for a pick with another reading (a prediction is not a
+    /// correction of this conversion) or for the reading in kana, which the
+    /// ranking leaves where it is.
+    fn record_context(&mut self, reading: &str, surface: &str) {
+        if self.mode.current() == InputMode::Emoji || surface == reading {
+            return;
+        }
+        let Some(offered) = self
+            .offered_answer
+            .as_ref()
+            .filter(|offered| offered.reading == reading)
+        else {
+            return;
+        };
+        let corrected = offered.text != surface;
+        let context = self.truncate_context_for_api();
+        let Some(cache) = &mut self.learning else {
+            return;
+        };
+        if corrected {
+            cache.remember_context(reading, surface, &context);
+        } else {
+            cache.confirm_context(reading, surface, &context);
+        }
     }
 
     /// Commit the current conversion

@@ -2,8 +2,10 @@
 //!
 //! Records which surface forms the user chose for each reading, and
 //! boosts those candidates on subsequent conversions. Persisted as a
-//! simple TSV file (`reading\tsurface\tfrequency\tlast_access`).
+//! simple TSV file (`reading\tsurface\tfrequency\tlast_access`, then one
+//! `context\tlast_access` pair per context the surface was corrected in).
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
@@ -18,6 +20,78 @@ pub struct LearningEntry {
     pub frequency: u32,
     /// Last selection time as Unix timestamp (seconds)
     pub last_access: u64,
+    /// Left contexts this surface was picked in over the candidate offered
+    /// first; see [`LearningCache::remember_context`].
+    pub contexts: Vec<LearnedContext>,
+}
+
+/// The text left of the caret when a surface was picked over the candidate
+/// offered first.
+#[derive(Debug, Clone)]
+pub struct LearnedContext {
+    pub text: String,
+    /// Last time the surface was picked with this text before it
+    pub last_access: u64,
+}
+
+/// How well a remembered context fits the text now left of the caret.
+/// Ordered by fit: more shared chars first, then the remembered context
+/// that had less besides them — 「学校」 fits 「学校」 better than
+/// 「この学校」 does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextMatch {
+    /// Chars the remembered context and the current one end with alike
+    pub shared: usize,
+    /// Chars of the remembered context before the shared ones
+    pub missing: usize,
+}
+
+impl Ord for ContextMatch {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.shared
+            .cmp(&other.shared)
+            .then_with(|| other.missing.cmp(&self.missing))
+    }
+}
+
+impl PartialOrd for ContextMatch {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Contexts kept per surface; the least recently used one makes room.
+const MAX_CONTEXTS_PER_SURFACE: usize = 8;
+
+/// The shortest context worth remembering, and the least a match must
+/// share: one character (a particle, a comma) precedes too many things to
+/// say which one is meant.
+const MIN_CONTEXT_CHARS: usize = 2;
+
+/// A context as it is stored and compared: on one line of the TSV, so tabs
+/// and other control characters become spaces. `None` when what is left is
+/// too short to mean anything.
+fn normalize_context(context: &str) -> Option<String> {
+    let text: String = context
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    (text.trim().chars().count() >= MIN_CONTEXT_CHARS).then_some(text)
+}
+
+/// How `stored` fits `context`, or `None` when it does not: they must end
+/// alike for at least half of what was stored. The conversion follows the
+/// text right before it, so the end is what has to agree, and half keeps a
+/// shared 「ので」 from standing in for a whole remembered clause.
+fn match_context(stored: &str, context: &str) -> Option<ContextMatch> {
+    let shared = stored
+        .chars()
+        .rev()
+        .zip(context.chars().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let missing = stored.chars().count() - shared;
+    (shared >= MIN_CONTEXT_CHARS && shared >= missing).then_some(ContextMatch { shared, missing })
 }
 
 /// Size limits for a [`LearningCache`].
@@ -94,9 +168,98 @@ impl LearningCache {
                 surface: surface.to_string(),
                 frequency: 1,
                 last_access: now,
+                contexts: Vec::new(),
             });
         }
         self.dirty = true;
+    }
+
+    /// Remember that `surface` was picked for `reading` with `context` left
+    /// of the caret, over the candidate offered first. Called for
+    /// corrections only: where the first candidate was right nothing needs
+    /// remembering, and the text before a conversion is not written to disk
+    /// without a reason.
+    ///
+    /// The same context on another surface of the reading is dropped — the
+    /// latest correction is what the context means now. No-op for a surface that
+    /// is not learned (see [`Self::record`]) or a context too short to tell
+    /// anything apart.
+    pub fn remember_context(&mut self, reading: &str, surface: &str, context: &str) {
+        let Some(context) = normalize_context(context) else {
+            return;
+        };
+        let Some(entries) = self.entries.get_mut(reading) else {
+            return;
+        };
+        if !entries.iter().any(|e| e.surface == surface) {
+            return;
+        }
+        let now = now_unix();
+        for entry in entries.iter_mut() {
+            if entry.surface != surface {
+                entry.contexts.retain(|c| c.text != context);
+                continue;
+            }
+            match entry.contexts.iter_mut().find(|c| c.text == context) {
+                Some(known) => known.last_access = now,
+                None => entry.contexts.push(LearnedContext {
+                    text: context.clone(),
+                    last_access: now,
+                }),
+            }
+            if entry.contexts.len() > MAX_CONTEXTS_PER_SURFACE
+                && let Some(oldest) =
+                    (0..entry.contexts.len()).min_by_key(|&i| entry.contexts[i].last_access)
+            {
+                entry.contexts.remove(oldest);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// `surface` was offered first with `context` left of the caret and
+    /// taken: keep the remembered context that put it there in use, so a
+    /// correction that keeps working is not the first one forgotten.
+    /// Nothing new is stored.
+    pub fn confirm_context(&mut self, reading: &str, surface: &str, context: &str) {
+        let Some(context) = normalize_context(context) else {
+            return;
+        };
+        let Some(entry) = self
+            .entries
+            .get_mut(reading)
+            .and_then(|entries| entries.iter_mut().find(|e| e.surface == surface))
+        else {
+            return;
+        };
+        let best = entry
+            .contexts
+            .iter_mut()
+            .filter_map(|c| Some((match_context(&c.text, &context)?, c)))
+            .max_by_key(|&(fit, _)| fit);
+        if let Some((_, known)) = best {
+            known.last_access = now_unix();
+            self.dirty = true;
+        }
+    }
+
+    /// The best fit between `context` and the contexts `surface` was
+    /// corrected to under `reading`, if any fits.
+    pub fn context_match(
+        &self,
+        reading: &str,
+        surface: &str,
+        context: &str,
+    ) -> Option<ContextMatch> {
+        let context = normalize_context(context)?;
+        self.entries
+            .get(reading)?
+            .iter()
+            .find(|e| e.surface == surface)?
+            .contexts
+            .iter()
+            .filter_map(|c| match_context(&c.text, &context))
+            .max()
     }
 
     /// Remove every learned entry that would resurface `surface` for input
@@ -158,7 +321,8 @@ impl LearningCache {
 
     /// Load a learning cache from a TSV file.
     ///
-    /// Format: `reading\tsurface\tfrequency\tlast_access`
+    /// Format: `reading\tsurface\tfrequency\tlast_access`, optionally
+    /// followed by `context\tlast_access` pairs (absent in a v1 file).
     /// Lines starting with `#` are comments.
     pub fn load(path: &Path, config: LearningConfig) -> anyhow::Result<Self> {
         let file = std::fs::File::open(path)?;
@@ -167,21 +331,24 @@ impl LearningCache {
 
         for line in reader.lines() {
             let line = line?;
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
+            // Not the whole line: a context may begin or end with a space.
+            let line = line.trim_end_matches(['\r', '\n']);
+            if line.trim().is_empty() || line.starts_with('#') {
                 continue;
             }
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() < 4 {
                 continue;
             }
-            let reading = parts[0];
+            // The line used to be trimmed whole; keep reading files that
+            // relied on it.
+            let reading = parts[0].trim_start();
             let surface = parts[1];
-            let frequency: u32 = match parts[2].parse() {
+            let frequency: u32 = match parts[2].trim().parse() {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let last_access: u64 = match parts[3].parse() {
+            let last_access: u64 = match parts[3].trim().parse() {
                 Ok(v) => v,
                 Err(_) => continue,
             };
@@ -194,6 +361,17 @@ impl LearningCache {
                     surface: surface.to_string(),
                     frequency,
                     last_access,
+                    contexts: parts[4..]
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .filter_map(|[text, last_access]| {
+                            Some(LearnedContext {
+                                text: normalize_context(text)?,
+                                last_access: last_access.trim().parse().ok()?,
+                            })
+                        })
+                        .collect(),
                 });
         }
 
@@ -231,7 +409,7 @@ impl LearningCache {
     fn write_tsv(&self, path: &Path) -> anyhow::Result<()> {
         let file = std::fs::File::create(path)?;
         let mut writer = std::io::BufWriter::new(file);
-        writeln!(writer, "# karukan learning cache v1")?;
+        writeln!(writer, "# karukan learning cache v2")?;
 
         // Sort readings for deterministic output
         let mut readings: Vec<&String> = self.entries.keys().collect();
@@ -240,11 +418,15 @@ impl LearningCache {
         for reading in readings {
             if let Some(entries) = self.entries.get(reading) {
                 for entry in entries {
-                    writeln!(
+                    write!(
                         writer,
                         "{}\t{}\t{}\t{}",
                         reading, entry.surface, entry.frequency, entry.last_access
                     )?;
+                    for context in &entry.contexts {
+                        write!(writer, "\t{}\t{}", context.text, context.last_access)?;
+                    }
+                    writeln!(writer)?;
                 }
             }
         }
@@ -555,11 +737,13 @@ mod tests {
             surface: "A".to_string(),
             frequency: 1,
             last_access: now,
+            contexts: Vec::new(),
         };
         let old = LearningEntry {
             surface: "B".to_string(),
             frequency: 1,
             last_access: now.saturating_sub(30 * 86400), // 30 days ago
+            contexts: Vec::new(),
         };
         assert!(score(&recent, now) > score(&old, now));
     }
@@ -571,11 +755,13 @@ mod tests {
             surface: "A".to_string(),
             frequency: 100,
             last_access: now,
+            contexts: Vec::new(),
         };
         let low_freq = LearningEntry {
             surface: "B".to_string(),
             frequency: 1,
             last_access: now,
+            contexts: Vec::new(),
         };
         assert!(score(&high_freq, now) > score(&low_freq, now));
     }
@@ -595,7 +781,7 @@ mod tests {
         cache.save(file.path()).unwrap();
 
         let content = std::fs::read_to_string(file.path()).unwrap();
-        assert!(content.starts_with("# karukan learning cache v1"));
+        assert!(content.starts_with("# karukan learning cache v2"));
         assert!(content.contains("きょう\t今日\t1\t"));
     }
 
@@ -721,5 +907,172 @@ mod tests {
         let cache = LearningCache::load(file.path(), config_with(100)).unwrap();
         // Only the first valid line should be loaded
         assert_eq!(cache.entry_count(), 1);
+    }
+
+    // --- Remembered contexts ---
+
+    fn fit(shared: usize, missing: usize) -> Option<ContextMatch> {
+        Some(ContextMatch { shared, missing })
+    }
+
+    #[test]
+    fn test_context_matches_where_it_recurs() {
+        let mut cache = cache_with(100);
+        cache.record("にはいってるの", "には行ってるの");
+        cache.remember_context("にはいってるの", "には行ってるの", "学校");
+
+        let at = |context| cache.context_match("にはいってるの", "には行ってるの", context);
+        assert_eq!(at("学校"), fit(2, 0));
+        // What precedes the remembered text does not matter.
+        assert_eq!(at("最近は学校"), fit(2, 0));
+        assert_eq!(at("お風呂"), None);
+        assert_eq!(at(""), None);
+        // Another surface of the reading has no context of its own.
+        assert_eq!(
+            cache.context_match("にはいってるの", "に入ってるの", "学校"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_context_needs_half_of_what_was_remembered() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        cache.remember_context("はいしゃ", "廃車", "バイクと事故ったので");
+
+        let at = |context| cache.context_match("はいしゃ", "廃車", context);
+        assert_eq!(at("車と事故ったので"), fit(7, 3));
+        assert_eq!(at("事故ったので"), fit(6, 4));
+        // A shared 「ので」 is not the remembered clause.
+        assert_eq!(at("虫歯が痛いので"), None);
+    }
+
+    #[test]
+    fn test_context_fit_prefers_the_closer_memory() {
+        // Both end in 「学校」; the one that was nothing but 「学校」 is the
+        // better fit for it, the longer one for 「この学校」.
+        let exact = ContextMatch {
+            shared: 2,
+            missing: 0,
+        };
+        let half = ContextMatch {
+            shared: 2,
+            missing: 2,
+        };
+        let longer = ContextMatch {
+            shared: 4,
+            missing: 0,
+        };
+        assert!(exact > half);
+        assert!(longer > exact);
+    }
+
+    #[test]
+    fn test_context_too_short_is_not_remembered() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        cache.remember_context("はいしゃ", "廃車", "は");
+        cache.remember_context("はいしゃ", "廃車", "   ");
+
+        assert!(cache.entries["はいしゃ"][0].contexts.is_empty());
+    }
+
+    #[test]
+    fn test_context_is_not_remembered_for_an_unlearned_surface() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        cache.remember_context("はいしゃ", "歯医者", "虫歯の治療のために");
+        cache.remember_context("よみ", "読み", "虫歯の治療のために");
+
+        assert_eq!(cache.entry_count(), 1);
+        assert!(cache.entries["はいしゃ"][0].contexts.is_empty());
+    }
+
+    #[test]
+    fn test_latest_correction_takes_the_context_over() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        cache.record("はいしゃ", "歯医者");
+        cache.remember_context("はいしゃ", "廃車", "事故ったので");
+        cache.remember_context("はいしゃ", "歯医者", "事故ったので");
+
+        assert_eq!(
+            cache.context_match("はいしゃ", "廃車", "事故ったので"),
+            None
+        );
+        assert_eq!(
+            cache.context_match("はいしゃ", "歯医者", "事故ったので"),
+            fit(6, 0),
+        );
+    }
+
+    #[test]
+    fn test_context_cap_drops_the_least_recently_used() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        for i in 0..=MAX_CONTEXTS_PER_SURFACE {
+            cache.remember_context("はいしゃ", "廃車", &format!("文脈{i}"));
+            // Age each one so the first is the oldest.
+            for context in &mut cache.entries.get_mut("はいしゃ").unwrap()[0].contexts {
+                context.last_access -= 10;
+            }
+        }
+        // Using the oldest survivor keeps it; the next oldest goes instead.
+        cache.confirm_context("はいしゃ", "廃車", "文脈1");
+        cache.remember_context("はいしゃ", "廃車", "新しい文脈");
+
+        let texts: Vec<&str> = cache.entries["はいしゃ"][0]
+            .contexts
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect();
+        assert_eq!(texts.len(), MAX_CONTEXTS_PER_SURFACE);
+        assert!(!texts.contains(&"文脈0"));
+        assert!(texts.contains(&"文脈1"));
+        assert!(!texts.contains(&"文脈2"));
+        assert!(texts.contains(&"新しい文脈"));
+    }
+
+    #[test]
+    fn test_contexts_survive_save_and_load() {
+        let mut cache = cache_with(100);
+        cache.record("はいしゃ", "廃車");
+        cache.record("はいしゃ", "歯医者");
+        // A tab would split the line; a trailing space is part of the text.
+        cache.remember_context("はいしゃ", "廃車", "事故\tった ");
+        cache.remember_context("はいしゃ", "廃車", "バイクと事故ったので");
+
+        let file = NamedTempFile::new().unwrap();
+        cache.save(file.path()).unwrap();
+        let loaded = LearningCache::load(file.path(), config_with(100)).unwrap();
+
+        assert_eq!(loaded.entry_count(), 2);
+        assert_eq!(
+            loaded.context_match("はいしゃ", "廃車", "事故 った "),
+            fit(6, 0),
+        );
+        assert_eq!(
+            loaded.context_match("はいしゃ", "廃車", "バイクと事故ったので"),
+            fit(10, 0),
+        );
+        assert_eq!(
+            loaded.context_match("はいしゃ", "歯医者", "バイクと事故ったので"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_v1_file_loads_without_contexts() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "# karukan learning cache v1\nはいしゃ\t廃車\t2\t1700000000\n",
+        )
+        .unwrap();
+
+        let cache = LearningCache::load(file.path(), config_with(100)).unwrap();
+
+        assert_eq!(cache.entry_count(), 1);
+        assert!(cache.entries["はいしゃ"][0].contexts.is_empty());
     }
 }

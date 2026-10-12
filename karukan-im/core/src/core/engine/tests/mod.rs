@@ -52,7 +52,35 @@ fn seed_model_cache(engine: &mut InputMethodEngine, katakana: &str, lctx: &str, 
             model: crate::core::engine::cache::ModelRole::Main,
             beam_width: 1,
         },
-        texts.iter().map(|s| s.to_string()).collect(),
+        texts
+            .iter()
+            .map(|s| ScoredCandidate::unscored(*s))
+            .collect(),
+    );
+}
+
+/// [`seed_model_cache`] with the probability the beam gave each text, as
+/// percentages.
+fn seed_scored_model_cache(
+    engine: &mut InputMethodEngine,
+    katakana: &str,
+    lctx: &str,
+    texts: &[(&str, f32)],
+) {
+    engine.conversion_cache.insert(
+        crate::core::engine::cache::ConversionCacheKey {
+            katakana: katakana.to_string(),
+            lctx: lctx.to_string(),
+            model: crate::core::engine::cache::ModelRole::Main,
+            beam_width: 1,
+        },
+        texts
+            .iter()
+            .map(|&(text, percent)| ScoredCandidate {
+                text: text.to_string(),
+                log_prob: Some((percent / 100.0).ln()),
+            })
+            .collect(),
     );
 }
 

@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use karukan_engine::ScoredCandidate;
+
 /// Which model a conversion ran on. In `Light` strategy mode the light model
 /// occupies the main slot, so this names the slot, not the file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -31,7 +33,7 @@ pub(in crate::core) struct ConversionCacheKey {
 }
 
 struct Entry {
-    candidates: Vec<String>,
+    candidates: Vec<ScoredCandidate>,
     last_used: u64,
 }
 
@@ -57,7 +59,7 @@ impl ConversionCache {
     }
 
     /// Cached candidates for `key`, refreshing its recency on hit.
-    pub fn get(&mut self, key: &ConversionCacheKey) -> Option<Vec<String>> {
+    pub fn get(&mut self, key: &ConversionCacheKey) -> Option<Vec<ScoredCandidate>> {
         self.clock += 1;
         let entry = self.entries.get_mut(key)?;
         entry.last_used = self.clock;
@@ -65,7 +67,7 @@ impl ConversionCache {
     }
 
     /// Insert a result, evicting the least recently used entry when full.
-    pub fn insert(&mut self, key: ConversionCacheKey, candidates: Vec<String>) {
+    pub fn insert(&mut self, key: ConversionCacheKey, candidates: Vec<ScoredCandidate>) {
         self.clock += 1;
         if self.entries.len() >= self.capacity && !self.entries.contains_key(&key) {
             // A linear scan over a few thousand entries is microseconds —
@@ -112,20 +114,24 @@ mod tests {
         key(katakana, lctx, ModelRole::Main, 1)
     }
 
+    fn one(text: &str) -> Vec<ScoredCandidate> {
+        vec![ScoredCandidate::unscored(text)]
+    }
+
     #[test]
     fn hit_and_miss() {
         let mut cache = ConversionCache::new(4);
         let k = greedy("キョウ", "");
         assert_eq!(cache.get(&k), None);
-        cache.insert(k.clone(), vec!["今日".to_string()]);
-        assert_eq!(cache.get(&k), Some(vec!["今日".to_string()]));
+        cache.insert(k.clone(), one("今日"));
+        assert_eq!(cache.get(&k), Some(one("今日")));
     }
 
     #[test]
     fn every_key_field_distinguishes_entries() {
         let mut cache = ConversionCache::new(4);
         let k1 = greedy("キョウ", "");
-        cache.insert(k1.clone(), vec!["今日".to_string()]);
+        cache.insert(k1.clone(), one("今日"));
         for other in [
             greedy("キョウ", "昨日と"),
             key("キョウ", "", ModelRole::Main, 3),
@@ -133,7 +139,7 @@ mod tests {
         ] {
             assert_eq!(cache.get(&other), None);
         }
-        assert_eq!(cache.get(&k1), Some(vec!["今日".to_string()]));
+        assert_eq!(cache.get(&k1), Some(one("今日")));
     }
 
     #[test]
@@ -142,11 +148,11 @@ mod tests {
         let k1 = greedy("ア", "");
         let k2 = greedy("イ", "");
         let k3 = greedy("ウ", "");
-        cache.insert(k1.clone(), vec!["亜".to_string()]);
-        cache.insert(k2.clone(), vec!["伊".to_string()]);
+        cache.insert(k1.clone(), one("亜"));
+        cache.insert(k2.clone(), one("伊"));
         // Touch k1 so k2 becomes the eviction target.
         cache.get(&k1);
-        cache.insert(k3.clone(), vec!["宇".to_string()]);
+        cache.insert(k3.clone(), one("宇"));
         assert_eq!(cache.get(&k2), None);
         assert!(cache.get(&k1).is_some());
         assert!(cache.get(&k3).is_some());
@@ -157,10 +163,10 @@ mod tests {
         let mut cache = ConversionCache::new(2);
         let k1 = greedy("ア", "");
         let k2 = greedy("イ", "");
-        cache.insert(k1.clone(), vec!["亜".to_string()]);
-        cache.insert(k2.clone(), vec!["伊".to_string()]);
-        cache.insert(k1.clone(), vec!["阿".to_string()]);
-        assert_eq!(cache.get(&k1), Some(vec!["阿".to_string()]));
+        cache.insert(k1.clone(), one("亜"));
+        cache.insert(k2.clone(), one("伊"));
+        cache.insert(k1.clone(), one("阿"));
+        assert_eq!(cache.get(&k1), Some(one("阿")));
         assert!(cache.get(&k2).is_some());
     }
 }

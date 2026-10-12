@@ -2,6 +2,7 @@
 //! Ctrl+Delete, which deletes the selected learning candidate from the history.
 
 use super::*;
+use crate::core::engine::conversion::rank_learned_by_context;
 use crate::core::engine::display::LEARNING_DELETE_HINT;
 
 #[test]
@@ -482,4 +483,323 @@ fn space_key_keeps_learning_in_composing() {
         "Space must surface learned `藍`, got {:?}",
         texts,
     );
+}
+
+// --- Learned homophones: the history against the model's reading of the context ---
+
+/// Engine whose history holds `surfaces` for はいしゃ, most picked first.
+fn engine_with_haisha_history(surfaces: &[&str]) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::new();
+    engine.converters.kanji = None;
+    let mut cache = LearningCache::new(LearningConfig::default());
+    for (rank, surface) in surfaces.iter().enumerate() {
+        for _ in rank..surfaces.len() {
+            cache.record("はいしゃ", surface);
+        }
+    }
+    engine.learning = Some(cache);
+    engine
+}
+
+fn haisha_candidates(engine: &mut InputMethodEngine) -> Vec<String> {
+    engine
+        .build_conversion_candidates("はいしゃ", "はいしゃ", "", 9)
+        .candidates
+        .into_iter()
+        .map(|c| c.text)
+        .collect()
+}
+
+#[test]
+fn context_the_model_is_sure_of_reorders_learned_homophones() {
+    // The reported case: 歯医者 picked more often than 廃車, then
+    // 「バイクと事故ったので」 typed before はいしゃ. The scores are the
+    // shipped light model's for that context.
+    let mut engine = engine_with_haisha_history(&["歯医者", "廃車"]);
+    engine.set_surrounding_context("バイクと事故ったので", "");
+    seed_scored_model_cache(
+        &mut engine,
+        "ハイシャ",
+        "バイクと事故ったので",
+        &[("廃車", 81.3), ("歯医者", 12.1), ("配車", 5.5)],
+    );
+
+    let texts = haisha_candidates(&mut engine);
+
+    assert_eq!(&texts[..4], ["はいしゃ", "廃車", "歯医者", "配車"]);
+}
+
+#[test]
+fn context_overrules_a_history_that_points_the_other_way() {
+    // The README's example with the history against it.
+    let mut engine = engine_with_haisha_history(&["廃車", "歯医者"]);
+    engine.set_surrounding_context("虫歯の治療のために", "");
+    seed_scored_model_cache(
+        &mut engine,
+        "ハイシャ",
+        "虫歯の治療のために",
+        &[("歯医者", 97.9), ("廃車", 1.2)],
+    );
+
+    let texts = haisha_candidates(&mut engine);
+
+    assert_eq!(&texts[..3], ["はいしゃ", "歯医者", "廃車"]);
+}
+
+#[test]
+fn an_unsure_model_leaves_the_history_order() {
+    // No context: the model leans to 歯医者 by 37% to 29%, which is not
+    // enough to overrule what the user picked more often.
+    let mut engine = engine_with_haisha_history(&["廃車", "歯医者"]);
+    seed_scored_model_cache(
+        &mut engine,
+        "ハイシャ",
+        "",
+        &[("歯医者", 37.4), ("廃車", 29.4), ("配車", 16.0)],
+    );
+
+    let texts = haisha_candidates(&mut engine);
+
+    assert_eq!(&texts[..4], ["はいしゃ", "廃車", "歯医者", "配車"]);
+}
+
+#[test]
+fn an_unscored_conversion_leaves_the_history_order() {
+    // Greedy decoding returns no probabilities, so there is nothing to
+    // weigh the history against.
+    let mut engine = engine_with_haisha_history(&["歯医者", "廃車"]);
+    seed_model_cache(&mut engine, "ハイシャ", "", &["廃車"]);
+
+    let texts = haisha_candidates(&mut engine);
+
+    assert_eq!(&texts[..3], ["はいしゃ", "歯医者", "廃車"]);
+}
+
+#[test]
+fn context_lifts_a_learned_candidate_from_below_the_cap() {
+    // Four learned homophones and room for three: the one the sentence
+    // calls for is chosen before the cap, not cut by it.
+    let mut engine = engine_with_haisha_history(&["歯医者", "敗者", "配車", "廃車"]);
+    seed_scored_model_cache(
+        &mut engine,
+        "ハイシャ",
+        "",
+        &[
+            ("廃車", 98.0),
+            ("歯医者", 1.0),
+            ("敗者", 0.5),
+            ("配車", 0.5),
+        ],
+    );
+
+    let candidates = engine
+        .build_conversion_candidates("はいしゃ", "はいしゃ", "", 9)
+        .candidates;
+
+    assert_eq!(candidates[1].text, "廃車");
+    assert_eq!(candidates[1].source, CandidateSource::Learning);
+}
+
+fn learned(texts: &[&str]) -> Vec<Candidate> {
+    texts
+        .iter()
+        .map(|text| Candidate {
+            text: text.to_string(),
+            reading: Some("はいしゃ".to_string()),
+            source: Some(CandidateSource::Learning),
+            description: None,
+        })
+        .collect()
+}
+
+fn ranked(history: &[&str], percents: &[(&str, f32)]) -> Vec<String> {
+    let scores: Vec<(String, f32)> = percents
+        .iter()
+        .map(|&(text, percent)| (text.to_string(), (percent / 100.0).ln()))
+        .collect();
+    rank_learned_by_context(learned(history), &scores, "はいしゃ", |_| None)
+        .into_iter()
+        .map(|c| c.text)
+        .collect()
+}
+
+#[test]
+fn each_history_rank_costs_the_same_odds() {
+    // ×4 passes one rank (the bar is ×3) but not two (×9).
+    assert_eq!(
+        ranked(&["歯医者", "廃車"], &[("廃車", 48.0), ("歯医者", 12.0)]),
+        ["廃車", "歯医者"],
+    );
+    assert_eq!(
+        ranked(
+            &["歯医者", "敗者", "廃車"],
+            &[("廃車", 48.0), ("歯医者", 12.0), ("敗者", 12.0)],
+        ),
+        ["歯医者", "廃車", "敗者"],
+    );
+}
+
+#[test]
+fn the_learned_kana_keeps_its_place_and_takes_no_rank() {
+    // Enter on a composition records the kana, so it sits somewhere in
+    // nearly every history. Counted as a rank it would put two ranks
+    // between 歯医者 and 廃車 and ×4 would no longer be enough.
+    assert_eq!(
+        ranked(
+            &["歯医者", "はいしゃ", "廃車"],
+            &[("廃車", 48.0), ("歯医者", 12.0)],
+        ),
+        ["廃車", "はいしゃ", "歯医者"],
+    );
+}
+
+#[test]
+fn a_learned_candidate_the_model_did_not_return_scores_as_its_least_likely() {
+    // 敗者 is not in the beam: it is taken to be as likely as 配車, the
+    // least likely candidate that is. 廃車 is far enough ahead of that to
+    // pass both ranks; 歯医者, at ×2.4, stays behind 敗者.
+    assert_eq!(
+        ranked(
+            &["敗者", "歯医者", "廃車"],
+            &[("廃車", 81.0), ("歯医者", 12.0), ("配車", 5.0)],
+        ),
+        ["廃車", "敗者", "歯医者"],
+    );
+}
+
+// --- Corrections remembered with their context ---
+
+const NIHAITTERUNO: &str = "にはいってるの";
+
+/// Engine with an empty history and a model that, whatever precedes the
+/// reading, is sure of 「に入ってるの」 — as the shipped ones are.
+fn engine_sure_of_haitteru(contexts: &[&str]) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::new();
+    engine.converters.kanji = None;
+    engine.learning = Some(LearningCache::new(LearningConfig::default()));
+    for context in contexts {
+        seed_scored_model_cache(
+            &mut engine,
+            "ニハイッテルノ",
+            context,
+            &[("に入ってるの", 97.0), ("には行ってるの", 0.2)],
+        );
+    }
+    engine
+}
+
+/// Type the reading after `context` and press Space; the selected row.
+fn convert_after(engine: &mut InputMethodEngine, context: &str) -> String {
+    engine.set_surrounding_context(context, "");
+    for ch in "nihaitteruno".chars() {
+        engine.process_key(&press(ch));
+    }
+    engine.process_key(&press_key(Keysym::SPACE));
+    selected_text(engine)
+}
+
+fn selected_text(engine: &InputMethodEngine) -> String {
+    engine
+        .state()
+        .candidates()
+        .and_then(|list| list.selected_text())
+        .expect("a selected candidate")
+        .to_string()
+}
+
+/// Step forward to `surface` and commit it.
+fn pick(engine: &mut InputMethodEngine, surface: &str) {
+    for _ in 0..20 {
+        if selected_text(engine) == surface {
+            engine.process_key(&press_key(Keysym::RETURN));
+            return;
+        }
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    panic!("`{surface}` is not in the list");
+}
+
+fn remembered(engine: &InputMethodEngine, surface: &str, context: &str) -> bool {
+    engine
+        .learning
+        .as_ref()
+        .unwrap()
+        .context_match(NIHAITTERUNO, surface, context)
+        .is_some()
+}
+
+#[test]
+fn a_correction_holds_in_its_context_against_a_sure_model() {
+    let mut engine = engine_sure_of_haitteru(&["学校", "部屋", "最近は学校", "お風呂"]);
+
+    // The model's answer is wrong here; the user corrects it.
+    assert_eq!(convert_after(&mut engine, "学校"), "に入ってるの");
+    pick(&mut engine, "には行ってるの");
+    // Elsewhere the model was right, and now both are learned — the case
+    // where the model used to win everywhere.
+    convert_after(&mut engine, "部屋");
+    pick(&mut engine, "に入ってるの");
+
+    assert_eq!(convert_after(&mut engine, "学校"), "には行ってるの");
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    assert_eq!(convert_after(&mut engine, "最近は学校"), "には行ってるの");
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    assert_eq!(convert_after(&mut engine, "部屋"), "に入ってるの");
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    // No remembered context speaks here: the model decides again.
+    assert_eq!(convert_after(&mut engine, "お風呂"), "に入ってるの");
+}
+
+#[test]
+fn only_a_correction_stores_its_context() {
+    let mut engine = engine_sure_of_haitteru(&["学校", "部屋"]);
+
+    // Taking the first candidate offered: learned, but no text is kept.
+    assert_eq!(convert_after(&mut engine, "部屋"), "に入ってるの");
+    pick(&mut engine, "に入ってるの");
+    assert!(!remembered(&engine, "に入ってるの", "部屋"));
+
+    convert_after(&mut engine, "学校");
+    pick(&mut engine, "には行ってるの");
+    assert!(remembered(&engine, "には行ってるの", "学校"));
+    assert!(!remembered(&engine, "に入ってるの", "学校"));
+}
+
+#[test]
+fn picking_the_kana_stores_no_context() {
+    let mut engine = engine_sure_of_haitteru(&["学校"]);
+
+    convert_after(&mut engine, "学校");
+    pick(&mut engine, NIHAITTERUNO);
+
+    assert!(!remembered(&engine, NIHAITTERUNO, "学校"));
+}
+
+#[test]
+fn a_remembered_context_outranks_the_model_and_the_closest_fit_wins() {
+    // 歯医者 was corrected to after 「学校」, 廃車 after 「この学校」; the
+    // model is sure of 敗者 throughout.
+    let fits = |history: &[&str], context: &str| -> Vec<String> {
+        let mut cache = LearningCache::new(LearningConfig::default());
+        for surface in history {
+            cache.record("はいしゃ", surface);
+        }
+        cache.remember_context("はいしゃ", "歯医者", "学校");
+        cache.remember_context("はいしゃ", "廃車", "この学校");
+        let scores = vec![("敗者".to_string(), (0.97f32).ln())];
+        rank_learned_by_context(learned(history), &scores, "はいしゃ", |surface| {
+            cache.context_match("はいしゃ", surface, context)
+        })
+        .into_iter()
+        .map(|c| c.text)
+        .collect()
+    };
+    let history = ["敗者", "廃車", "歯医者"];
+
+    assert_eq!(fits(&history, "学校"), ["歯医者", "廃車", "敗者"]);
+    assert_eq!(fits(&history, "この学校"), ["廃車", "歯医者", "敗者"]);
+    assert_eq!(fits(&history, "会社"), ["敗者", "廃車", "歯医者"]);
 }

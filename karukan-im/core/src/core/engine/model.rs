@@ -4,7 +4,6 @@
 //! the per-computation cache, and the split conversion that Space's
 //! mixed list and the AI view share.
 
-use std::collections::HashSet;
 use std::time::Instant;
 
 use tracing::debug;
@@ -30,7 +29,7 @@ impl InputMethodEngine {
         reading: &str,
         api_context: &str,
         num_candidates: usize,
-    ) -> Vec<String> {
+    ) -> Vec<ScoredCandidate> {
         if !karukan_engine::contains_kana(reading) {
             return vec![];
         }
@@ -98,7 +97,7 @@ impl InputMethodEngine {
         beam_width: usize,
         katakana: &str,
         lctx: &str,
-    ) -> (Vec<String>, Option<u64>) {
+    ) -> (Vec<ScoredCandidate>, Option<u64>) {
         // The lookup comes before the converter check: a hit needs no model.
         if let Some(candidates) = self.cached_result(model, beam_width, katakana, lctx) {
             debug!("convert: cache hit {:?} beam={}", model, beam_width);
@@ -110,7 +109,7 @@ impl InputMethodEngine {
         let key = Self::cache_key(model, beam_width, katakana, lctx);
         let start = Instant::now();
         let candidates = converter
-            .convert(katakana, lctx, beam_width)
+            .convert_scored(katakana, lctx, beam_width)
             .unwrap_or_default();
         let elapsed = start.elapsed().as_millis() as u64;
         if !candidates.is_empty() {
@@ -134,7 +133,7 @@ impl InputMethodEngine {
         beam_width: usize,
         katakana: &str,
         lctx: &str,
-    ) -> Option<Vec<String>> {
+    ) -> Option<Vec<ScoredCandidate>> {
         let key = Self::cache_key(model, beam_width, katakana, lctx);
         if let Some(candidates) = self.conversion_cache.get(&key) {
             return Some(candidates);
@@ -177,7 +176,7 @@ impl InputMethodEngine {
         katakana: &str,
         lctx: &str,
         beam_width: usize,
-    ) -> (Vec<String>, Option<u64>) {
+    ) -> (Vec<ScoredCandidate>, Option<u64>) {
         let main_key = Self::cache_key(ModelRole::Main, 1, katakana, lctx);
         let light_key = Self::cache_key(ModelRole::Light, beam_width, katakana, lctx);
         let cached_main = self.cached_result(ModelRole::Main, 1, katakana, lctx);
@@ -194,7 +193,7 @@ impl InputMethodEngine {
                 s.spawn(|| {
                     let start = Instant::now();
                     let result = main_converter
-                        .convert(katakana, lctx, 1)
+                        .convert_scored(katakana, lctx, 1)
                         .unwrap_or_default();
                     (result, start.elapsed().as_millis() as u64)
                 })
@@ -202,7 +201,7 @@ impl InputMethodEngine {
             let h_light = cached_light.is_none().then(|| {
                 s.spawn(|| {
                     light_converter
-                        .convert(katakana, lctx, beam_width)
+                        .convert_scored(katakana, lctx, beam_width)
                         .unwrap_or_default()
                 })
             });
@@ -261,25 +260,37 @@ impl InputMethodEngine {
         }
     }
 
-    /// Merge two candidate lists, primary first, dropping duplicates.
+    /// Merge two candidate lists, primary first, dropping duplicates. A
+    /// duplicate still hands over its score when the kept one has none:
+    /// ParallelBeam's greedy head is unscored, and the beam usually found
+    /// the same text.
     pub(super) fn merge_candidates_dedup(
-        primary: Vec<String>,
-        secondary: Vec<String>,
+        primary: Vec<ScoredCandidate>,
+        secondary: Vec<ScoredCandidate>,
         max_candidates: usize,
-    ) -> Vec<String> {
-        let mut seen = HashSet::new();
-        primary
-            .into_iter()
-            .chain(secondary)
-            .filter(|c| seen.insert(c.clone()))
-            .take(max_candidates)
-            .collect()
+    ) -> Vec<ScoredCandidate> {
+        let mut merged: Vec<ScoredCandidate> = Vec::new();
+        for candidate in primary.into_iter().chain(secondary) {
+            match merged.iter_mut().find(|kept| kept.text == candidate.text) {
+                Some(kept) => kept.log_prob = kept.log_prob.or(candidate.log_prob),
+                None => merged.push(candidate),
+            }
+        }
+        merged.truncate(max_candidates);
+        merged
     }
 
     /// the cost stays bounded however long the reading grows. An empty
     /// result means "the model produced nothing"; a candidate equal to the
     /// reading is a real answer (kana-only words convert to themselves).
-    pub(super) fn model_candidates(&mut self, reading: &str, num_candidates: usize) -> Vec<String> {
+    ///
+    /// Each candidate keeps the score of its span; the prefix is the same
+    /// text in all of them, so the scores still compare.
+    pub(super) fn model_candidates(
+        &mut self,
+        reading: &str,
+        num_candidates: usize,
+    ) -> Vec<ScoredCandidate> {
         if !karukan_engine::contains_kana(reading) {
             return Vec::new();
         }
@@ -295,7 +306,7 @@ impl InputMethodEngine {
                 // Nothing converted, so there is no model answer here.
                 Vec::new()
             } else {
-                vec![prefix]
+                vec![ScoredCandidate::unscored(prefix)]
             };
         }
 
@@ -313,7 +324,10 @@ impl InputMethodEngine {
         // themselves — so it rides like any other candidate.
         self.run_kana_kanji_conversion(&span, &lctx, num_candidates)
             .into_iter()
-            .map(|tail| format!("{prefix}{tail}"))
+            .map(|tail| ScoredCandidate {
+                text: format!("{prefix}{}", tail.text),
+                log_prob: tail.log_prob,
+            })
             .collect()
     }
 

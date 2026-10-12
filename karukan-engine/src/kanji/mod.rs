@@ -5,7 +5,9 @@ mod error;
 mod hf_download;
 mod llamacpp;
 
-pub use backend::{KanaKanjiConverter, ModelSource, build_jinen_prompt, clean_model_output};
+pub use backend::{
+    KanaKanjiConverter, ModelSource, ScoredCandidate, build_jinen_prompt, clean_model_output,
+};
 pub use error::KanjiError;
 pub use llama_cpp_2::token::LlamaToken;
 pub use llamacpp::{LlamaCppModel, NllScorer};

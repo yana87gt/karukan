@@ -64,6 +64,27 @@ pub fn clean_model_output(text: &str) -> String {
     text.trim().to_string()
 }
 
+/// One conversion candidate and how likely the model found it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredCandidate {
+    pub text: String,
+    /// Natural-log probability of the whole output given the reading and
+    /// the context, as the beam search accumulated it. `None` for greedy
+    /// decoding, which samples without scoring, and for the reading
+    /// returned when the model produced nothing.
+    pub log_prob: Option<f32>,
+}
+
+impl ScoredCandidate {
+    /// A candidate nothing scored.
+    pub fn unscored(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            log_prob: None,
+        }
+    }
+}
+
 /// Kanji converter using llama.cpp backend
 pub struct KanaKanjiConverter {
     model: LlamaCppModel,
@@ -102,6 +123,22 @@ impl KanaKanjiConverter {
         context: &str,
         num_candidates: usize,
     ) -> Result<Vec<String>> {
+        Ok(self
+            .convert_scored(reading, context, num_candidates)?
+            .into_iter()
+            .map(|c| c.text)
+            .collect())
+    }
+
+    /// [`Self::convert`], keeping the probability the beam gave each
+    /// candidate. The same text can come out of two token sequences; the
+    /// more likely one is kept, as the beam returns best first.
+    pub fn convert_scored(
+        &self,
+        reading: &str,
+        context: &str,
+        num_candidates: usize,
+    ) -> Result<Vec<ScoredCandidate>> {
         // Convert hiragana to katakana (model expects katakana input)
         let katakana = hiragana_to_katakana(reading);
 
@@ -112,7 +149,7 @@ impl KanaKanjiConverter {
         let tokens = self.model.tokenize(&prompt)?;
         let eos = Some(self.model.eos_token_id().0);
 
-        let mut candidates = Vec::with_capacity(num_candidates);
+        let mut candidates: Vec<ScoredCandidate> = Vec::with_capacity(num_candidates);
 
         if num_candidates == 1 {
             // Single candidate: use greedy decoding (faster)
@@ -122,7 +159,7 @@ impl KanaKanjiConverter {
             let clean = clean_model_output(&text);
 
             if !clean.is_empty() {
-                candidates.push(clean);
+                candidates.push(ScoredCandidate::unscored(clean));
             }
         } else {
             // Multiple candidates: use beam search
@@ -130,19 +167,22 @@ impl KanaKanjiConverter {
                 self.model
                     .generate_beam_search(&tokens, MAX_NEW_TOKENS, eos, num_candidates)?;
 
-            for (output_tokens, _score) in results {
+            for (output_tokens, score) in results {
                 let text = self.model.decode(&output_tokens, true)?;
                 let clean = clean_model_output(&text);
 
-                if !clean.is_empty() && !candidates.contains(&clean) {
-                    candidates.push(clean);
+                if !clean.is_empty() && !candidates.iter().any(|c| c.text == clean) {
+                    candidates.push(ScoredCandidate {
+                        text: clean,
+                        log_prob: Some(score),
+                    });
                 }
             }
         }
 
         // If no candidates, return the original reading
         if candidates.is_empty() {
-            candidates.push(reading.to_string());
+            candidates.push(ScoredCandidate::unscored(reading));
         }
 
         Ok(candidates)

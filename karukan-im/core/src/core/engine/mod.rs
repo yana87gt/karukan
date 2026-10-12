@@ -29,7 +29,8 @@ mod tests;
 
 use karukan_engine::{
     DateRewriter, Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig,
-    RewriteOutput, Rewriter, RewriterChain, RomajiConverter,
+    RewriteOutput, Rewriter, RewriterChain, RomajiConverter, ScoredCandidate,
+    learning::ContextMatch,
 };
 use tracing::{debug, trace};
 
@@ -154,6 +155,10 @@ pub struct InputMethodEngine {
     /// selects. The Conversion state owns its own list; this covers the
     /// Composing state, which renders candidates without holding them.
     shown_suggestions: CandidateList,
+    /// The candidate the conversion of the current reading starts on, kept
+    /// until the composition ends so a commit can tell a correction from
+    /// taking what was offered (`record_context`).
+    offered_answer: Option<conversion::OfferedAnswer>,
     /// Dictionaries (system, user)
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
@@ -188,6 +193,7 @@ impl InputMethodEngine {
             conversion_cache: ConversionCache::default(),
             suppress_suggest: false,
             shown_suggestions: CandidateList::default(),
+            offered_answer: None,
             dicts: Dictionaries::default(),
             learning: None,
             model_loading: None,
@@ -286,6 +292,7 @@ impl InputMethodEngine {
         self.chunks.clear();
         self.chunk_breaks.clear();
         self.shown_suggestions = CandidateList::default();
+        self.offered_answer = None;
     }
 
     /// End the composition: clear the buffer, live display, and chunks,

@@ -212,8 +212,8 @@ impl InputMethodEngine {
     fn model_source_view(&mut self, reading: &str) -> Vec<Candidate> {
         self.model_candidates(reading, self.config.num_candidates)
             .into_iter()
-            .map(|text| Candidate {
-                text,
+            .map(|model| Candidate {
+                text: model.text,
                 reading: Some(reading.to_string()),
                 source: Some(CandidateSource::Model),
                 description: None,

@@ -240,7 +240,7 @@ fn test_light_request_reuses_the_main_models_cache_entry() {
 
     assert_eq!(
         engine.cached_result(ModelRole::Light, 1, "アイ", ""),
-        Some(vec!["愛".to_string()]),
+        Some(vec![ScoredCandidate::unscored("愛")]),
     );
     // A wider beam is a different computation: no substitution.
     assert_eq!(engine.cached_result(ModelRole::Light, 3, "アイ", ""), None);
@@ -257,12 +257,12 @@ fn test_main_request_never_reuses_a_light_cache_entry() {
             model: ModelRole::Light,
             beam_width: 1,
         },
-        vec!["藍".to_string()],
+        vec![ScoredCandidate::unscored("藍")],
     );
 
     assert_eq!(engine.cached_result(ModelRole::Main, 1, "アイ", ""), None);
     assert_eq!(
         engine.cached_result(ModelRole::Light, 1, "アイ", ""),
-        Some(vec!["藍".to_string()]),
+        Some(vec![ScoredCandidate::unscored("藍")]),
     );
 }

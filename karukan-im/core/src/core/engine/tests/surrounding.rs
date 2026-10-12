@@ -120,22 +120,34 @@ fn test_reset_clears_all_state() {
 
 // --- Candidate Merge Tests ---
 
+fn unscored(texts: &[&str]) -> Vec<ScoredCandidate> {
+    texts
+        .iter()
+        .map(|text| ScoredCandidate::unscored(*text))
+        .collect()
+}
+
+fn merged_texts(primary: &[&str], secondary: &[&str], max_candidates: usize) -> Vec<String> {
+    InputMethodEngine::merge_candidates_dedup(
+        unscored(primary),
+        unscored(secondary),
+        max_candidates,
+    )
+    .into_iter()
+    .map(|c| c.text)
+    .collect()
+}
+
 #[test]
 fn test_merge_candidates_dedup_no_duplicates() {
-    let primary = vec!["今日".to_string(), "京".to_string()];
-    let secondary = vec!["恭".to_string(), "強".to_string()];
-
-    let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 5);
+    let result = merged_texts(&["今日", "京"], &["恭", "強"], 5);
 
     assert_eq!(result, vec!["今日", "京", "恭", "強"]);
 }
 
 #[test]
 fn test_merge_candidates_dedup_with_duplicates() {
-    let primary = vec!["今日".to_string(), "京".to_string()];
-    let secondary = vec!["京".to_string(), "強".to_string()]; // "京" is duplicate
-
-    let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 5);
+    let result = merged_texts(&["今日", "京"], &["京", "強"], 5); // "京" is duplicate
 
     // "京" should appear only once (from primary)
     assert_eq!(result, vec!["今日", "京", "強"]);
@@ -143,10 +155,7 @@ fn test_merge_candidates_dedup_with_duplicates() {
 
 #[test]
 fn test_merge_candidates_dedup_respects_max() {
-    let primary = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-    let secondary = vec!["d".to_string(), "e".to_string()];
-
-    let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 3);
+    let result = merged_texts(&["a", "b", "c"], &["d", "e"], 3);
 
     // Should only return 3 candidates
     assert_eq!(result.len(), 3);
@@ -156,10 +165,7 @@ fn test_merge_candidates_dedup_respects_max() {
 #[test]
 fn test_merge_candidates_dedup_primary_priority() {
     // Same candidate appears in both, primary should win (appear first)
-    let primary = vec!["漢字".to_string()];
-    let secondary = vec!["漢字".to_string(), "感じ".to_string()];
-
-    let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 5);
+    let result = merged_texts(&["漢字"], &["漢字", "感じ"], 5);
 
     // "漢字" should appear only once, "感じ" added from secondary
     assert_eq!(result, vec!["漢字", "感じ"]);
@@ -167,22 +173,40 @@ fn test_merge_candidates_dedup_primary_priority() {
 
 #[test]
 fn test_merge_candidates_dedup_empty_primary() {
-    let primary = vec![];
-    let secondary = vec!["a".to_string(), "b".to_string()];
-
-    let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 5);
+    let result = merged_texts(&[], &["a", "b"], 5);
 
     assert_eq!(result, vec!["a", "b"]);
 }
 
 #[test]
 fn test_merge_candidates_dedup_empty_secondary() {
-    let primary = vec!["a".to_string(), "b".to_string()];
-    let secondary = vec![];
+    let result = merged_texts(&["a", "b"], &[], 5);
+
+    assert_eq!(result, vec!["a", "b"]);
+}
+
+#[test]
+fn test_merge_candidates_dedup_hands_over_the_duplicates_score() {
+    // ParallelBeam's greedy head is unscored; the beam's copy of the same
+    // text is dropped, but its score is the only one there is.
+    let primary = unscored(&["廃車"]);
+    let secondary = vec![
+        ScoredCandidate {
+            text: "歯医者".to_string(),
+            log_prob: Some(-0.5),
+        },
+        ScoredCandidate {
+            text: "廃車".to_string(),
+            log_prob: Some(-1.5),
+        },
+    ];
 
     let result = InputMethodEngine::merge_candidates_dedup(primary, secondary, 5);
 
-    assert_eq!(result, vec!["a", "b"]);
+    assert_eq!(result[0].text, "廃車");
+    assert_eq!(result[0].log_prob, Some(-1.5));
+    assert_eq!(result[1].text, "歯医者");
+    assert_eq!(result.len(), 2);
 }
 
 // --- Surrounding Context (Left/Right) Tests ---

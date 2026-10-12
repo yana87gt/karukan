@@ -173,7 +173,7 @@ impl InputMethodEngine {
         self.run_kana_kanji_conversion(reading, lctx, 1)
             .into_iter()
             .next()
-            .unwrap_or_else(|| reading.to_string())
+            .map_or_else(|| reading.to_string(), |top| top.text)
     }
 
     /// Insert a manual chunk boundary at the caret, then reconvert. A
